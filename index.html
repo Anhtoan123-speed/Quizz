@@ -1,0 +1,273 @@
+<!DOCTYPE html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Quizz Ôn Tập</title>
+
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;700;800&display=swap" rel="stylesheet">
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js"></script>
+
+<style>
+
+:root{--bg:#F3F6F9;--card:#fff;--tx:#12263A;--mu:#5B6B7B;--ln:#DCE4EC;--pri:#0B75C9;--pri2:#095FA3;--navy:#0A2E4D;--ok:#1E9E5A;--okb:#E3F6EB;--no:#D64545;--nob:#FCE8E8;--tint:#E6F2FC;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0C1824;--card:#132435;--tx:#E8F0F7;--mu:#95A7B8;--ln:#24384B;--pri:#3A9BE8;--pri2:#5BB0F0;--navy:#0A2E4D;--okb:#123A28;--nob:#40201F;--tint:#153650}}
+
+:root[data-theme="dark"]{--bg:#0C1824;--card:#132435;--tx:#E8F0F7;--mu:#95A7B8;--ln:#24384B;--pri:#3A9BE8;--pri2:#5BB0F0;--navy:#0A2E4D;--okb:#123A28;--nob:#40201F;--tint:#153650}
+
+*{box-sizing:border-box}html{scroll-padding-top:env(safe-area-inset-top,0px)}
+
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.55 "Be Vietnam Pro",system-ui,Arial,sans-serif}
+
+header{background:var(--navy);color:#fff;position:sticky;top:env(safe-area-inset-top,0px);z-index:5}
+
+.bar{max-width:920px;margin:auto;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 16px;flex-wrap:wrap}
+
+.brand{font-weight:800;font-size:19px;cursor:pointer}nav{display:flex;gap:4px;flex-wrap:wrap}
+
+nav a{color:#CFE4F7;padding:6px 11px;border-radius:8px;cursor:pointer;font-size:14px}nav a:hover{background:#ffffff22;color:#fff}
+
+main{max-width:920px;margin:auto;padding:20px 16px 60px}
+
+h1{font-size:clamp(30px,6vw,48px);line-height:1.15;margin:0 0 10px;font-weight:800}h2{margin:0 0 14px;font-size:22px}h3{margin:0 0 8px;font-size:17px}
+
+.card{background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:18px;margin-bottom:16px}
+
+.hero{background:linear-gradient(135deg,var(--pri),var(--navy));color:#fff;border-radius:18px;padding:34px 24px;margin-bottom:18px}
+
+.hero p{font-size:18px;margin:0 0 22px;color:#DCEBF8;max-width:520px}
+
+.btn{font:inherit;font-weight:600;border:1px solid var(--pri);background:var(--pri);color:#fff;padding:10px 18px;border-radius:10px;cursor:pointer;min-height:44px}
+
+.btn:hover{background:var(--pri2)}.btn.o{background:var(--card);color:var(--pri)}.btn.o:hover{background:var(--tint)}.btn:disabled{opacity:.45;cursor:not-allowed}
+
+.hero .btn{background:#fff;color:var(--navy);border-color:#fff}.hero .btn.o{background:transparent;color:#fff;border-color:#ffffff88}
+
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+
+label{display:block;font-weight:600;font-size:14px;margin:12px 0 5px}
+
+input,select,textarea{font:inherit;width:100%;padding:10px 12px;border:1px solid var(--ln);border-radius:10px;background:var(--card);color:var(--tx)}
+
+textarea{min-height:200px;resize:vertical}input[type=checkbox]{width:auto}
+
+:focus-visible{outline:3px solid var(--pri);outline-offset:2px}
+
+.drop{display:block;border:2px dashed var(--pri);background:var(--tint);border-radius:14px;padding:26px;text-align:center;cursor:pointer;margin:0}
+
+.drop input{display:none}.mu{color:var(--mu);font-size:14px}
+
+.err{background:var(--nob);color:var(--no);border-radius:10px;padding:10px 12px;margin:8px 0;font-size:14px}
+
+.ok{color:var(--ok)}.bad{color:var(--no)}
+
+.f{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-bottom:1px solid var(--ln);font-size:14px}
+
+.prog{height:8px;background:var(--ln);border-radius:8px;overflow:hidden;margin:8px 0 16px}.prog i{display:block;height:100%;background:var(--pri)}
+
+.tm{font-weight:800;font-variant-numeric:tabular-nums;background:var(--tint);color:var(--pri);padding:4px 12px;border-radius:20px}.tm.lo{background:var(--nob);color:var(--no)}
+
+.opt{display:flex;gap:12px;width:100%;text-align:left;font:inherit;padding:13px 14px;margin-bottom:10px;background:var(--card);color:var(--tx);border:2px solid var(--ln);border-radius:12px;cursor:pointer}
+
+.opt:hover:not(:disabled){border-color:var(--pri)}.opt b{color:var(--pri)}
+
+.opt.g{background:var(--okb);border-color:var(--ok)}.opt.r{background:var(--nob);border-color:var(--no)}.opt:disabled{cursor:default}
+
+.exp{background:var(--tint);border-left:4px solid var(--pri);border-radius:8px;padding:12px 14px;margin:6px 0 14px}
+
+.big{font-size:56px;font-weight:800;color:var(--pri);line-height:1}
+
+.tag{display:inline-block;background:var(--tint);color:var(--pri);border-radius:20px;padding:2px 10px;font-size:13px;margin-right:6px}
+
+</style></head><body>
+
+<header><div class="bar"><div class="brand" onclick="go('home')">📘 Quizz Ôn Tập</div><nav><a onclick="go('home')">Trang chủ</a><a onclick="go('imp')">Import</a><a onclick="go('mk')">Tạo đề</a><a onclick="go('his')">Lịch sử</a></nav></div></header>
+
+<main id="app"></main>
+
+<script>
+
+const $=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+const ld=(k,d)=>{try{const v=JSON.parse(localStorage.getItem(k));return v==null?d:v}catch(e){return d}},sv=(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v))}catch(e){}};
+
+const shuf=a=>{a=[...a];for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a};
+
+const L=['A','B','C','D'],fmt=s=>String(s/60|0).padStart(2,'0')+':'+String(s%60).padStart(2,'0');
+
+let S={doc:null,files:[],quiz:null,tid:0,err:''};
+
+const SAMPLE=[
+
+["Thẻ HTML nào dùng để tạo liên kết?",["<link>","<a>","<href>","<url>"],1,"Thẻ <a> kết hợp thuộc tính href tạo siêu liên kết.","Dễ"],
+
+["Thuộc tính CSS nào đổi màu chữ?",["font-color","text-style","color","foreground"],2,"Thuộc tính color quy định màu chữ của phần tử.","Dễ"],
+
+["Thẻ nào là tiêu đề cấp lớn nhất trong HTML?",["<h6>","<head>","<title>","<h1>"],3,"<h1> là tiêu đề cấp 1, quan trọng nhất trong các thẻ h1–h6.","Dễ"],
+
+["Trong CSS, selector '.box' chọn phần tử nào?",["Có id là box","Có class là box","Thẻ <box>","Con trực tiếp của box"],1,"Dấu chấm (.) dùng để chọn theo class; dấu # chọn theo id.","Dễ"],
+
+["Thứ tự hộp (box model) từ trong ra ngoài là?",["margin, border, padding, content","content, padding, border, margin","content, border, padding, margin","padding, content, margin, border"],1,"Từ trong ra ngoài: content → padding → border → margin.","Trung bình"],
+
+["Giá trị display nào tạo bố cục hai chiều hàng và cột?",["flex","inline","grid","block"],2,"display:grid chia bố cục theo cả hàng và cột; flex chủ yếu theo một trục.","Trung bình"],
+
+["Đơn vị 'rem' tính theo đâu?",["Chiều rộng màn hình","Cỡ chữ phần tử cha","Cỡ chữ của phần tử gốc (html)","Chiều cao dòng"],2,"rem tương đối so với font-size của phần tử gốc <html>.","Trung bình"],
+
+["Media query nào áp dụng cho màn hình rộng tối đa 600px?",["@media (min-width:600px)","@media (max-width:600px)","@media (width>600px)","@screen (600px)"],1,"max-width:600px áp dụng khi chiều rộng viewport ≤ 600px.","Trung bình"],
+
+["Khi hai quy tắc CSS xung đột, yếu tố nào có độ ưu tiên cao nhất?",["Selector thẻ","Selector class","Selector id","Style inline"],3,"Thứ tự ưu tiên tăng dần: thẻ < class < id < inline (không tính !important).","Khó"],
+
+["position:sticky hoạt động thế nào?",["Cố định vĩnh viễn theo trang","Bám theo chuột","Như relative, rồi dính khi cuộn qua ngưỡng","Bị loại khỏi luồng tài liệu"],2,"sticky là relative cho đến khi cuộn tới ngưỡng top/bottom thì dính lại như fixed.","Khó"]
+
+].map(a=>({q:a[0],o:a[1],c:a[2],e:a[3],l:a[4]}));
+
+async function gen(text,n,lv,sj){
+
+ /* API key được giữ ở backend. Không đặt API key trong file HTML/JavaScript này. */
+ let res,data;
+
+ try{
+   res=await fetch('/.netlify/functions/generate-quiz',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:text.slice(0,12000),count:n,level:lv,subject:sj})});
+   data=await res.json();
+ }catch(e){throw Error('Không thể kết nối đến máy chủ tạo câu hỏi. Hãy kiểm tra kết nối mạng hoặc cấu hình backend.');}
+
+ if(!res.ok)throw Error(data.error||'Máy chủ không thể tạo câu hỏi lúc này. Hãy thử lại sau.');
+
+ const r=data,bad=/điền từ|chỗ trống|_{3,}/i,seen=new Set();
+
+ const out=(r.questions||[]).filter(x=>{if(!x||typeof x.q!='string'||!Array.isArray(x.o)||x.o.length!=4||!x.o.every(o=>typeof o=='string'&&o.trim())||new Set(x.o.map(o=>o.trim().toLowerCase())).size!=4||!Number.isInteger(x.c)||x.c<0||x.c>3||typeof x.e!='string'||x.e.length<20||bad.test(x.q))return false;const k=x.q.trim().toLowerCase();if(seen.has(k))return false;seen.add(k);return true}).map(x=>({q:x.q.trim(),o:x.o.map(o=>o.trim()),c:x.c,e:x.e.trim(),l:['Dễ','Trung bình','Khó'][(x.l||2)-1]||'Trung bình'}));
+
+ if(!out.length)throw Error(r.note||'Tài liệu chưa đủ thông tin đáng tin cậy để tạo câu hỏi. Hãy bổ sung nội dung rõ ràng hơn.');return out}
+
+function go(v){clearInterval(S.tid);S.err='';V[v]();scrollTo(0,0)}
+
+const V={
+
+home(){$('#app').innerHTML=`<div class="hero"><h1>Quizz Ôn Tập</h1><p>Ôn tập thông minh – kiểm tra kiến thức – cải thiện điểm số</p><div class="row"><button class="btn" onclick="go('imp')">Import tài liệu</button><button class="btn o" onclick="go('mk')">Tạo bộ câu hỏi</button><button class="btn o" onclick="go('mk')">Làm bài</button><button class="btn o" onclick="go('his')">Lịch sử kết quả</button></div></div>
+
+<div class="grid"><div class="card"><h3>1. Nhập tài liệu</h3><p class="mu">Tải Word, PDF, ảnh hoặc .txt, xem trước và chỉnh sửa nội dung.</p></div><div class="card"><h3>2. Tạo đề</h3><p class="mu">Chọn đề có sẵn hoặc tự tạo từ tài liệu, đặt số câu, mức độ và thời gian.</p></div><div class="card"><h3>3. Làm bài</h3><p class="mu">Có lời giải chi tiết, đếm giờ và làm lại các câu sai.</p></div></div>`},
+
+imp(){const saved=ld('docs',[]);$('#app').innerHTML=`<h2>Import tài liệu</h2><div class="card"><label class="drop"><input type="file" id="fi" multiple accept=".doc,.docx,.pdf,.png,.jpg,.jpeg,.txt,.ppt,.pptx" onchange="upl(this.files)"><b>Chọn file từ máy tính</b><div class="mu">.docx, .pdf, .png, .jpg, .jpeg, .txt · tối đa 15 MB mỗi file</div></label><div id="fl"></div><div id="er"></div>
+
+<label for="sj">Chủ đề / môn học</label><input id="sj" list="sjl" placeholder="Ví dụ: HTML/CSS, Kế toán, BPMN, Machine Learning" value="${esc(S.doc?.subject||'')}"><datalist id="sjl"><option>HTML/CSS<option>Kế toán<option>BPMN<option>Machine Learning</datalist>
+
+<label for="tx">Nội dung trích xuất (có thể sửa hoặc xóa phần không cần)</label><textarea id="tx" placeholder="Nội dung sẽ hiện ở đây, hoặc bạn có thể dán văn bản trực tiếp...">${esc(S.doc?.text||'')}</textarea>
+
+<div class="row" style="margin-top:14px"><button class="btn" onclick="useDoc(true)">Lưu tài liệu &amp; tiếp tục</button><button class="btn o" onclick="useDoc(false)">Tiếp tục, không lưu tài liệu</button></div><p class="mu">“Không lưu” chỉ dùng tài liệu cho lần tạo đề này, không lưu vào thiết bị.</p></div>
+
+<div class="card"><h3>Tài liệu đã lưu</h3>${saved.length?saved.map((d,i)=>`<div class="f"><span>${esc(d.name)} <span class="tag">${esc(d.subject||'Chưa có chủ đề')}</span></span><span class="row"><button class="btn o" onclick="openDoc(${i})">Mở</button><button class="btn o" onclick="delDoc(${i})">Xóa</button></span></div>`).join(''):'<p class="mu">Chưa có tài liệu nào được lưu.</p>'}</div>`;fl()},
+
+mk(){const saved=ld('docs',[]);$('#app').innerHTML=`<h2>Tạo bộ câu hỏi</h2><div class="card"><label for="src">Nguồn câu hỏi</label><select id="src"><option value="s">Bộ có sẵn: HTML/CSS cơ bản (10 câu)</option>${S.doc?'<option value="c" selected>Tạo câu hỏi thông minh từ tài liệu vừa import'+(S.doc.saved?'':' (chưa lưu)')+'</option>':''}${saved.map((d,i)=>`<option value="d${i}">Tạo câu hỏi thông minh từ tài liệu đã lưu: ${esc(d.name)}</option>`).join('')}</select>
+
+<div class="grid"><div><label for="n">Số câu (1–50)</label><input id="n" type="number" min="1" max="50" value="10"></div><div><label for="lv">Mức độ</label><select id="lv"><option>Trộn tất cả<option>Dễ<option>Trung bình<option>Khó</select></div><div><label for="tl">Thời gian làm bài</label><select id="tl"><option value="0">Không giới hạn (đếm giờ)<option value="5">5 phút<option value="10">10 phút<option value="15" selected>15 phút<option value="30">30 phút<option value="45">45 phút<option value="60">60 phút</select></div></div>
+
+<label><input type="checkbox" id="sh" checked> Xáo trộn câu hỏi và đáp án</label><div id="er">${S.err?`<div class="err">${S.err}</div>`:''}</div><button class="btn" id="go" onclick="build()">Tiếp tục</button></div>`},
+
+ready(){const q=S.quiz;$('#app').innerHTML=`<div class="card"><h2>${esc(q.title)}</h2><p><span class="tag">${esc(q.subject)}</span><span class="tag">${q.qs.length} câu</span><span class="tag">${q.limit?q.limit/60+' phút':'Không giới hạn'}</span></p><p class="mu">Đồng hồ bắt đầu chạy khi bạn nhấn “Bắt đầu làm bài”.</p><div class="row"><button class="btn" onclick="start()">Bắt đầu làm bài</button><button class="btn o" onclick="go('mk')">Quay lại</button></div></div>`},
+
+quiz(){const q=S.quiz,i=q.i,c=q.qs[i],a=q.ans[i],done=a!=null,show=done||q.rev[i],n=q.ans.filter(x=>x!=null).length;
+
+$('#app').innerHTML=`<div class="card"><div class="row" style="justify-content:space-between"><b>Câu ${i+1}/${q.qs.length}</b><span class="tm" id="tm"></span></div><div class="prog"><i style="width:${n/q.qs.length*100}%"></i></div><div class="mu">Đã làm ${n}/${q.qs.length} câu · ${esc(c.l||'')}</div>
+
+<h3 style="font-size:19px;margin:10px 0 16px">${esc(c.q)}</h3>${c.o.map((t,k)=>`<button class="opt ${show&&k===c.c?'g':''} ${done&&k===a&&a!==c.c?'r':''}" ${show?'disabled':''} onclick="pick(${k})"><b>${L[k]}</b><span>${esc(t)}</span></button>`).join('')}
+
+${show?`<div class="exp"><b>Lời giải chi tiết</b><br>${esc(c.e)}</div>`:''}
+
+<div class="row"><button class="btn o" ${i?'':'disabled'} onclick="nav(-1)">Câu trước</button><button class="btn o" ${show?'disabled':''} onclick="q_rev()">Xem lời giải</button><button class="btn o" onclick="flag()">${q.fl[i]?'★ Đã đánh dấu':'☆ Cần xem lại'}</button>${i<q.qs.length-1?'<button class="btn" onclick="nav(1)">Câu tiếp</button>':'<button class="btn" onclick="finish()">Nộp bài</button>'}</div>
+
+<div class="row" style="margin-top:14px">${q.qs.map((_,k)=>`<button class="btn o" style="min-height:34px;padding:2px 9px;${q.fl[k]?'border-color:var(--no);':''}${q.ans[k]!=null?'background:var(--tint);':''}" onclick="S.quiz.i=${k};V.quiz()">${k+1}</button>`).join('')}</div></div>`;tick()},
+
+res(){const r=S.res,w=r.qs.map((c,k)=>({c,k})).filter(x=>x.c.a!==x.c.c);$('#app').innerHTML=`<div class="card" style="text-align:center"><h2>Kết quả: ${esc(r.title)}</h2><div class="big">${r.score}/10</div><p>${r.pct}% · ${r.ok} đúng · ${r.total-r.ok} sai · Thời gian ${fmt(r.time)}</p>${w.length?'':'<div class="exp"><b>🎉 Chúc mừng!</b> Bạn đã làm đúng toàn bộ bộ câu hỏi.</div>'}</div>
+
+${w.length?`<h3>Các câu chưa đúng</h3>${w.map(x=>rev(x.c,x.k)).join('')}`:''}
+
+<div class="row">${w.length?'<button class="btn" onclick="redo(true)">Làm lại các câu sai</button>':''}<button class="btn ${w.length?'o':''}" onclick="redo(false)">Làm lại toàn bộ đề</button><button class="btn o" onclick="go('mk')">${w.length?'Tạo bộ câu hỏi khác':'Chọn bộ câu hỏi khác'}</button><button class="btn o" onclick="go('home')">Về trang chủ</button></div>`},
+
+his(){const h=ld('his',[]);const pts=h.slice(-12);const W=600,H=140,st=pts.length>1?(W-40)/(pts.length-1):0;
+
+const P=pts.map((p,i)=>[20+i*st,H-15-p.pct/100*(H-30)]);
+
+$('#app').innerHTML=`<h2>Lịch sử kết quả</h2>${h.length
+  ? `<div class="card"><h3>Tiến bộ theo thời gian (% đúng)</h3><svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto"><line x1="20" x2="${W-20}" y1="${H-15}" y2="${H-15}" stroke="var(--ln)"/><polyline fill="none" stroke="var(--pri)" stroke-width="3" points="${P.map(p=>p.join(',')).join(' ')}"/>${P.map((p,i)=>`<circle cx="${p[0]}" cy="${p[1]}" r="4" fill="var(--pri)"/><text x="${p[0]}" y="${p[1]-8}" font-size="11" text-anchor="middle" fill="var(--mu)">${pts[i].pct}</text>`).join('')}</svg></div>` + `<div class="card">${h.map((r,i)=>[r,i]).reverse().map(([r,i])=>`<div class="f"><span><b>${esc(r.title)}</b><br><span class="mu">${new Date(r.d).toLocaleString('vi-VN')}</span></span><span style="text-align:right"><span class="ok">${r.ok} đúng</span> · <span class="bad">${r.total-r.ok} sai</span> · <b>${r.score}/10</b><br><button class="btn o" style="min-height:34px;padding:2px 12px" onclick="S.res=ld('his',[])[${i}];V.res()">Xem chi tiết</button></span></div>`).join('')}<button class="btn o" style="margin-top:12px" onclick="if(confirm('Xóa toàn bộ lịch sử?')){sv('his',[]);V.his()}">Xóa lịch sử</button></div>`
+  : `<div class="card"><p>Chưa có lần làm bài nào. Hãy làm bài đầu tiên nhé!</p><button class="btn" onclick="go('mk')">Làm bài</button></div>`}`}};
+
+function rev(c,k){const a=c.a;return`<div class="card"><b>Câu ${k+1}.</b> ${esc(c.q)}<div style="margin:8px 0">${a==null?'<span class="bad">Chưa trả lời</span>':`Bạn chọn: <span class="bad">${L[a]}. ${esc(c.o[a])}</span>`}<br>Đáp án đúng: <span class="ok">${L[c.c]}. ${esc(c.o[c.c])}</span></div><div class="exp">${esc(c.e)}</div></div>`}
+
+function fl(){$('#fl').innerHTML=S.files.map(f=>`<div class="f"><span>${esc(f.n)} <span class="tag">${esc(f.t)}</span></span><span class="${f.s.startsWith('Lỗi')?'bad':f.s=='Hoàn tất'?'ok':'mu'}">${esc(f.s)}</span></div>`).join('')}
+
+async function readF(f,set){const ext=f.name.split('.').pop().toLowerCase();
+
+ if(!['doc','docx','pdf','png','jpg','jpeg','txt','ppt','pptx'].includes(ext))throw Error('Định dạng .'+ext+' không được hỗ trợ.');
+
+ if(f.size>15*1048576)throw Error('File quá lớn (tối đa 15 MB).');
+
+ if(ext=='txt')return f.text();
+
+ if(ext=='docx')return(await mammoth.extractRawText({arrayBuffer:await f.arrayBuffer()})).value;
+
+ if(ext=='pdf'){pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';const p=await pdfjsLib.getDocument({data:await f.arrayBuffer()}).promise;let t='';for(let i=1;i<=p.numPages;i++){set('Đang đọc trang '+i+'/'+p.numPages);t+=(await(await p.getPage(i)).getTextContent()).items.map(x=>x.str).join(' ')+'\n'}
+
+  if(t.trim().length<20)throw Error('PDF này là bản scan, chưa nhận diện được chữ. Hãy chụp từng trang thành ảnh hoặc dán văn bản.');return t}
+
+ if(['png','jpg','jpeg'].includes(ext)){set('Đang nhận diện chữ (OCR)...');try{return(await Tesseract.recognize(f,'vie')).data.text}catch(e){throw Error('OCR không chạy được trong môi trường này. Hãy dán văn bản vào ô bên dưới.')}}
+
+ throw Error('.'+ext+' chưa đọc được trực tiếp. Hãy lưu thành .docx hoặc .pdf, hoặc dán văn bản.')}
+
+async function upl(fs){$('#er').innerHTML='';for(const f of fs){const e={n:f.name,t:(f.name.split('.').pop()||'?').toUpperCase(),s:'Đang tải lên...'};S.files.push(e);fl();
+
+ try{const t=await readF(f,s=>{e.s=s;fl()});const x=$('#tx');x.value=(x.value?x.value+'\n\n':'')+t.trim();e.s='Hoàn tất'}catch(err){e.s='Lỗi';$('#er').innerHTML+=`<div class="err"><b>${esc(f.name)}:</b> ${esc(err.message)}</div>`}fl()}$('#fi').value=''}
+
+function useDoc(save){const text=$('#tx').value.trim(),sj=$('#sj').value.trim();if(text.length<50){$('#er').innerHTML='<div class="err">Nội dung quá ngắn. Cần ít nhất vài câu để tạo câu hỏi.</div>';return}
+
+ const name=(S.files.filter(f=>f.s=='Hoàn tất').map(f=>f.n)[0]||'Tài liệu '+new Date().toLocaleDateString('vi-VN'));S.doc={name,subject:sj||'Chưa có chủ đề',text,saved:save};
+
+ if(save){const d=ld('docs',[]);d.push({name,subject:S.doc.subject,text});sv('docs',d)}S.files=[];go('mk')}
+
+function openDoc(i){const d=ld('docs',[])[i];S.doc={...d,saved:true};V.imp()}
+
+function delDoc(i){const d=ld('docs',[]);d.splice(i,1);sv('docs',d);V.imp()}
+
+async function build(){const v=$('#src').value,lv=$('#lv').value,sh=$('#sh').checked,tl=+$('#tl').value;let n=Math.min(Math.max(+$('#n').value||10,1),50),pool,title,sj;
+
+ if(v=='s'){pool=SAMPLE;title='HTML/CSS cơ bản';sj='HTML/CSS';if(lv!='Trộn tất cả')pool=pool.filter(x=>x.l==lv);if(!pool.length){S.err='Bộ có sẵn không có câu ở mức '+lv+'.';V.mk();return}}
+
+ else{const d=v=='c'?S.doc:ld('docs',[])[+v.slice(1)],b=$('#go');b.disabled=true;b.textContent='Đang phân tích tài liệu...';$('#er').innerHTML='<p class="mu">Việc này có thể mất từ 10 đến 60 giây.</p>';
+
+  try{pool=await gen(d.text,n,lv,d.subject)}catch(e){S.err=esc(e.message||'Không tạo được câu hỏi. Hãy thử lại.');V.mk();return}title='Đề từ: '+d.name;sj=d.subject}
+
+ n=Math.min(n,pool.length);S.quiz=mkq(pool,n,sh,title,sj,tl*60);V.ready()}
+
+function mkq(pool,n,sh,title,sj,limit){let qs=(sh?shuf(pool):pool).slice(0,n).map(x=>{let o=x.o.map((t,k)=>[t,k==x.c]);if(sh)o=shuf(o);return{q:x.q,o:o.map(y=>y[0]),c:o.findIndex(y=>y[1]),e:x.e,l:x.l}});
+
+ return{title,subject:sj,qs,limit,sh,i:0,ans:[],rev:[],fl:[],pool}}
+
+function start(){S.quiz.t0=Date.now();V.quiz();S.tid=setInterval(tick,1000)}
+
+function el(){return Math.floor((Date.now()-S.quiz.t0)/1000)}
+
+function tick(){const q=S.quiz,t=$('#tm');if(!t)return;const e=el();if(q.limit){const r=q.limit-e;if(r<=0){finish();return}t.textContent='⏱ Còn '+fmt(r);t.className='tm'+(r<=60?' lo':'')}else t.textContent='⏱ '+fmt(e)}
+
+function pick(k){const q=S.quiz;if(q.ans[q.i]!=null)return;q.ans[q.i]=k;V.quiz()}
+
+function q_rev(){S.quiz.rev[S.quiz.i]=1;V.quiz()}
+
+function flag(){const q=S.quiz;q.fl[q.i]=!q.fl[q.i];V.quiz()}
+
+function nav(d){S.quiz.i+=d;V.quiz()}
+
+function finish(){const q=S.quiz;if(q.done)return;const un=q.qs.length-q.ans.filter(x=>x!=null).length;if(un&&el()<q.limit-1||(un&&!q.limit)){if(!confirm('Còn '+un+' câu chưa làm. Nộp bài ngay?'))return}
+
+ q.done=1;clearInterval(S.tid);const qs=q.qs.map((c,k)=>({...c,a:q.ans[k]==null?null:q.ans[k]})),ok=qs.filter(c=>c.a===c.c).length,tot=qs.length;
+
+ const r={d:Date.now(),title:q.title,total:tot,ok,score:Math.round(ok/tot*100)/10,pct:Math.round(ok/tot*100),time:Math.min(el(),q.limit||1e9),qs};
+
+ const h=ld('his',[]);h.push(r);sv('his',h.slice(-50));S.res=r;V.res()}
+
+function redo(wrong){const r=S.res,pool=(wrong?r.qs.filter(c=>c.a!==c.c):r.qs).map(c=>({q:c.q,o:c.o,c:c.c,e:c.e,l:c.l})),o=S.quiz||{};
+
+ S.quiz=mkq(pool,pool.length,true,(wrong?'Làm lại câu sai: ':'')+r.title,o.subject||'',o.limit||0);V.ready()}
+
+V.home();
+
+</script></body></html>
