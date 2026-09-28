@@ -116,10 +116,10 @@ function dedupe(questions) {
 // Lỗi tạm thời đáng thử lại: giới hạn tốc độ (429), lỗi server, quá tải (503), timeout (504)
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 
-async function callGemini({ model, prompt, maxOutputTokens, startedAt }) {
+async function callGemini({ model, prompt, maxOutputTokens, startedAt, maxAttempts = 3, thinkingLevel }) {
   let lastError;
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const remaining = TIME_BUDGET_MS - (Date.now() - startedAt);
     if (remaining < 4000) break;
 
@@ -142,7 +142,8 @@ async function callGemini({ model, prompt, maxOutputTokens, startedAt }) {
             generationConfig: {
               responseMimeType: "application/json",
               responseSchema: RESPONSE_SCHEMA,
-              maxOutputTokens
+              maxOutputTokens,
+              ...(thinkingLevel ? { thinkingConfig: { thinkingLevel } } : {})
             }
           })
         }
@@ -155,7 +156,7 @@ async function callGemini({ model, prompt, maxOutputTokens, startedAt }) {
 
       lastError = { status: response.status, data };
 
-      if (RETRYABLE.has(response.status) && attempt < 3) {
+      if (RETRYABLE.has(response.status) && attempt < maxAttempts) {
         await wait(attempt * 1500);
         continue;
       }
@@ -167,7 +168,7 @@ async function callGemini({ model, prompt, maxOutputTokens, startedAt }) {
         break;
       }
       lastError = { status: 0, data: { error: { message: error.message } } };
-      if (attempt < 3) {
+      if (attempt < maxAttempts) {
         await wait(attempt * 1000);
         continue;
       }
@@ -235,20 +236,46 @@ exports.handler = async function handler(event) {
   // Yêu cầu dư vài câu để còn lọc câu lỗi, nhưng không quá nhiều để tránh chậm.
   const targetCount = Math.min(safeCount + (safeCount >= 20 ? 4 : 3), 50);
   const model = process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
+  // Model dự phòng khi model chính bị quá tải. Đặt GEMINI_FALLBACK_MODEL=none để tắt.
+  const fallbackEnv = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash";
+  const fallbackModel = fallbackEnv === "none" || fallbackEnv === model ? "" : fallbackEnv;
   const maxOutputTokens = Math.min(2000 + targetCount * 500, 30000);
 
   try {
-    const data = await callGemini({
-      model,
-      prompt: createPrompt({
-        text: text.slice(0, 12000),
-        targetCount,
-        level,
-        subject
-      }),
-      maxOutputTokens,
-      startedAt
+    const prompt = createPrompt({
+      text: text.slice(0, 12000),
+      targetCount,
+      level,
+      subject
     });
+
+    let data;
+    try {
+      data = await callGemini({
+        model,
+        prompt,
+        maxOutputTokens,
+        startedAt,
+        maxAttempts: fallbackModel ? 2 : 3
+      });
+    } catch (primaryError) {
+      // Chỉ chuyển sang model dự phòng với lỗi tạm thời (quá tải, giới hạn tốc độ, timeout)
+      const canFallback =
+        fallbackModel &&
+        RETRYABLE.has(primaryError?.status) &&
+        TIME_BUDGET_MS - (Date.now() - startedAt) > 6000;
+      if (!canFallback) throw primaryError;
+
+      console.warn(`Model ${model} lỗi ${primaryError.status}, chuyển sang ${fallbackModel}`);
+      data = await callGemini({
+        model: fallbackModel,
+        prompt,
+        maxOutputTokens,
+        startedAt,
+        maxAttempts: 2,
+        thinkingLevel: process.env.GEMINI_FALLBACK_THINKING || "low"
+      });
+    }
 
     if (data.promptFeedback?.blockReason) {
       return reply(422, {
