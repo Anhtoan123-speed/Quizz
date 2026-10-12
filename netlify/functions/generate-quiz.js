@@ -1,14 +1,45 @@
+
 /*
- * netlify/functions/generate-quiz.js
- *
- * ENV:
- * GEMINI_API_KEY
- * GEMINI_MODEL
- * GEMINI_FALLBACK_MODEL
- * GEMINI_FALLBACK_THINKING
- * GROQ_API_KEY
- * GROQ_MODEL
- */
+=========================================================
+ QUIZZ ÔN TẬP - GENERATE QUIZ API
+ File: netlify/functions/generate-quiz.js
+=========================================================
+
+ ENVIRONMENT VARIABLES:
+
+ GEMINI_API_KEY
+ GEMINI_MODEL
+ GEMINI_FALLBACK_MODEL
+ GEMINI_FALLBACK_THINKING
+ GROQ_API_KEY
+ GROQ_MODEL
+
+ OUTPUT FORMAT:
+
+ {
+   questions: [
+     {
+       q: "Question",
+       o: ["A", "B", "C", "D"],
+       c: 0,
+       l: 2,
+       e: "Explanation",
+       t: "Topic",
+       k: "Kiến thức"
+     }
+   ],
+   meta: {},
+   note: ""
+ }
+
+=========================================================
+*/
+
+"use strict";
+
+/* =====================================================
+   CONFIGURATION
+===================================================== */
 
 const LEVELS = new Set([
   "Dễ",
@@ -29,22 +60,35 @@ const HEADERS = {
   "Access-Control-Allow-Methods": "POST, OPTIONS"
 };
 
+const MAX_QUESTIONS = 50;
+const MAX_DOCUMENT_CHARS = 16000;
+const MAX_TOTAL_TIME = 50000;
+const MAX_ATTEMPTS = 12;
+
+const GEMINI_BATCH = 8;
+const GROQ_BATCH = 4;
+
 function reply(statusCode, data) {
   return {
     statusCode,
     headers: HEADERS,
-    body: statusCode === 204 ? "" : JSON.stringify(data)
+    body: statusCode === 204
+      ? ""
+      : JSON.stringify(data)
   };
 }
 
 function env(name) {
-  return (process.env[name] || "").trim();
+  return String(process.env[name] || "").trim();
 }
 
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
 
-/* =========================================================
-   NORMALIZE
-========================================================= */
+/* =====================================================
+   NORMALIZATION
+===================================================== */
 
 function normalize(text) {
   return String(text || "")
@@ -57,70 +101,23 @@ function normalize(text) {
     .trim();
 }
 
-
-/* =========================================================
-   STOP WORDS
-========================================================= */
-
 const STOP_WORDS = new Set([
-  // Vietnamese
-  "la", "gi", "nao", "sau", "day",
-  "trong", "cac", "mot", "nhung",
-  "va", "voi", "cua", "cho", "khi",
-  "theo", "duoc", "ve", "co",
-  "khong", "dung", "nhat", "hay",
-  "phat", "bieu", "lua", "chon",
-  "dap", "an", "noi", "hoi",
-  "truong", "hop", "khai", "niem",
-
-  // English
-  "the", "is", "are", "was", "were",
-  "and", "or", "of", "to", "in",
-  "for", "with", "that", "this",
-  "from", "as", "by", "on", "an",
-  "a", "be", "can", "will", "what",
-  "which", "how", "when", "where",
-  "following", "statement", "statements",
-  "correct", "incorrect", "best",
-  "question", "about", "according",
-  "concept", "option", "choice"
+  "la", "gi", "nao", "trong", "nhung",
+  "mot", "cac", "cua", "cho", "theo",
+  "duoc", "khong", "voi", "va",
+  "what", "which", "the", "and",
+  "are", "with", "from", "that",
+  "this", "following", "question",
+  "answer", "correct", "statement"
 ]);
 
 function semanticWords(text) {
   return normalize(text)
     .split(" ")
-    .filter(
-      word =>
-        word.length > 2 &&
-        !STOP_WORDS.has(word)
+    .filter(word =>
+      word.length > 2 &&
+      !STOP_WORDS.has(word)
     );
-}
-
-function tokenSet(text) {
-  return new Set(
-    semanticWords(text)
-  );
-}
-
-function bigrams(text) {
-  const words =
-    semanticWords(text);
-
-  const result = new Set();
-
-  for (
-    let i = 0;
-    i < words.length - 1;
-    i++
-  ) {
-    result.add(
-      words[i] +
-      " " +
-      words[i + 1]
-    );
-  }
-
-  return result;
 }
 
 function jaccard(a, b) {
@@ -136,97 +133,69 @@ function jaccard(a, b) {
     }
   }
 
-  return (
-    common /
-    (
-      a.size +
-      b.size -
-      common
-    )
+  return common / (
+    a.size + b.size - common
   );
 }
 
+function bigrams(text) {
+  const words = semanticWords(text);
+  const result = new Set();
 
-/* =========================================================
-   CHỐNG TRÙNG
-========================================================= */
+  for (let i = 0; i < words.length - 1; i++) {
+    result.add(
+      words[i] + " " + words[i + 1]
+    );
+  }
+
+  return result;
+}
+
+/* =====================================================
+   ANTI-DUPLICATION
+===================================================== */
 
 function isSimilar(a, b) {
-  const first =
-    normalize(a);
+  const first = normalize(a);
+  const second = normalize(b);
 
-  const second =
-    normalize(b);
-
-  if (
-    !first ||
-    !second
-  ) {
+  if (!first || !second) {
     return false;
   }
 
+  if (first === second) {
+    return true;
+  }
+
+  const shorter = first.length < second.length
+    ? first
+    : second;
+
+  const longer = first.length < second.length
+    ? second
+    : first;
+
   if (
-    first === second
+    shorter.length >= 40 &&
+    longer.includes(shorter) &&
+    shorter.length / longer.length >= 0.80
   ) {
     return true;
   }
 
-  /*
-   * Một câu gần như
-   * chứa toàn bộ câu kia
-   */
-  if (
-    first.length >= 40 &&
-    second.length >= 40
-  ) {
-    const shorter =
-      first.length <
-      second.length
-        ? first
-        : second;
+  const wordScore = jaccard(
+    new Set(semanticWords(first)),
+    new Set(semanticWords(second))
+  );
 
-    const longer =
-      first.length <
-      second.length
-        ? second
-        : first;
+  const bigramScore = jaccard(
+    bigrams(first),
+    bigrams(second)
+  );
 
-    if (
-      longer.includes(
-        shorter
-      ) &&
-
-      shorter.length /
-      longer.length >=
-      0.80
-    ) {
-      return true;
-    }
-  }
-
-  const wordScore =
-    jaccard(
-      tokenSet(first),
-      tokenSet(second)
-    );
-
-  const bigramScore =
-    jaccard(
-      bigrams(first),
-      bigrams(second)
-    );
-
-  /*
-   * Ngưỡng cao để tránh
-   * loại nhầm những câu
-   * cùng cấu trúc nhưng
-   * hỏi kiến thức khác.
-   */
   return (
     wordScore >= 0.84 ||
-
     bigramScore >= 0.80 ||
-
     (
       wordScore >= 0.78 &&
       bigramScore >= 0.65
@@ -234,75 +203,42 @@ function isSimilar(a, b) {
   );
 }
 
-
-/* =========================================================
-   VALIDATE QUESTION
-========================================================= */
+/* =====================================================
+   VALIDATE QUESTIONS
+===================================================== */
 
 function validQuestion(q) {
-  return (
+  return Boolean(
     q &&
+    typeof q.q === "string" &&
+    q.q.trim().length >= 8 &&
 
-    typeof q.q ===
-      "string" &&
-
-    q.q.trim().length >=
-      8 &&
-
-    /*
-     * Không điền từ
-     * cả tiếng Việt và tiếng Anh.
-     */
     !/điền từ|chỗ trống|fill in the blank|fill the blank|_{3,}/i
       .test(q.q) &&
 
     Array.isArray(q.o) &&
-
     q.o.length === 4 &&
 
-    q.o.every(
-      option =>
-        typeof option ===
-          "string" &&
-        option.trim()
+    q.o.every(option =>
+      typeof option === "string" &&
+      option.trim().length > 0
     ) &&
 
-    /*
-     * 4 đáp án phải khác nhau.
-     */
     new Set(
-      q.o.map(
-        normalize
-      )
+      q.o.map(normalize)
     ).size === 4 &&
 
-    Number.isInteger(
-      q.c
-    ) &&
-
+    Number.isInteger(q.c) &&
     q.c >= 0 &&
-
     q.c <= 3 &&
 
-    typeof q.e ===
-      "string" &&
-
-    q.e.trim().length >=
-      20
+    typeof q.e === "string" &&
+    q.e.trim().length >= 20
   );
 }
 
-
-/* =========================================================
-   NORMALIZE LEVEL
-========================================================= */
-
 function normalizeLevel(value) {
-  if (
-    [1, 2, 3].includes(
-      value
-    )
-  ) {
+  if ([1, 2, 3].includes(value)) {
     return value;
   }
 
@@ -310,51 +246,20 @@ function normalizeLevel(value) {
     "Dễ": 1,
     "Trung bình": 2,
     "Khó": 3,
-
-    /*
-     * Hỗ trợ nếu AI
-     * vô tình trả tiếng Anh.
-     */
     "Easy": 1,
     "Medium": 2,
     "Hard": 3
   };
 
-  return (
-    levels[value] ||
-    2
-  );
+  return levels[value] || 2;
 }
 
-
-/* =========================================================
-   NORMALIZE KIND
-========================================================= */
-
 function normalizeKind(value) {
-  const text =
-    normalize(value);
+  const text = normalize(value);
 
   if (
-    text.includes(
-      "van dung"
-    ) ||
-
-    text.includes(
-      "tinh huong"
-    ) ||
-
-    text.includes(
-      "ap dung"
-    ) ||
-
-    text.includes(
-      "application"
-    ) ||
-
-    text.includes(
-      "scenario"
-    )
+    /van dung|tinh huong|ap dung|application|scenario/
+      .test(text)
   ) {
     return "Vận dụng";
   }
@@ -362,1324 +267,637 @@ function normalizeKind(value) {
   return "Kiến thức";
 }
 
-
-/* =========================================================
-   CLEAN QUESTIONS
-========================================================= */
-
 function cleanQuestions(
   list,
   exclude,
-  limit,
-  quizMode = "apply"
+  quizMode
 ) {
-  const seen = [
-    ...exclude
-  ];
-
   const output = [];
+  const seen = [...exclude];
 
   for (
-    const q of
-    Array.isArray(list)
+    const q of Array.isArray(list)
       ? list
       : []
   ) {
-    if (
-      !validQuestion(q)
-    ) {
+    if (!validQuestion(q)) {
       continue;
     }
 
-    /*
-     * Loại câu trùng.
-     */
     if (
-      seen.some(
-        old =>
-          isSimilar(
-            old,
-            q.q
-          )
+      seen.some(old =>
+        isSimilar(old, q.q)
       )
     ) {
       continue;
     }
 
     const question = {
-      q:
-        q.q.trim(),
+      q: q.q.trim(),
 
-      o:
-        q.o.map(
-          option =>
-            option.trim()
-        ),
+      o: q.o.map(option =>
+        option.trim()
+      ),
 
-      c:
-        q.c,
+      c: q.c,
 
-      l:
-        normalizeLevel(
-          q.l
-        ),
+      l: normalizeLevel(q.l),
 
-      e:
-        q.e.trim(),
+      e: q.e.trim(),
 
-      t:
-        typeof q.t ===
-          "string"
-          ? q.t.trim()
-          : "",
+      t: typeof q.t === "string"
+        ? q.t.trim()
+        : "",
 
-      k:
-        normalizeKind(
-          q.k
-        )
+      k: normalizeKind(q.k)
     };
 
-    /*
-     * SOURCE MODE:
-     *
-     * Không chấp nhận
-     * câu Vận dụng.
-     */
     if (
-      quizMode ===
-        "source" &&
-
-      question.k ===
-        "Vận dụng"
+      quizMode === "source" &&
+      question.k === "Vận dụng"
     ) {
       continue;
     }
 
-    output.push(
-      question
-    );
-
-    seen.push(
-      question.q
-    );
-
-    if (
-      output.length >=
-      limit
-    ) {
-      break;
-    }
+    output.push(question);
+    seen.push(question.q);
   }
 
   return output;
 }
 
-
-/* =========================================================
-   EXCLUDE
-========================================================= */
-
-function compactExclude(
-  exclude,
-  maxItems = 220,
-  maxChars = 60000
-) {
-  const source =
-    Array.isArray(exclude)
-      ? exclude.slice(
-          -maxItems
-        )
-      : [];
-
-  const output = [];
-
-  let chars = 0;
-
-  for (
-    let i =
-      source.length - 1;
-
-    i >= 0;
-
-    i--
-  ) {
-    const item =
-      String(
-        source[i] ||
-        ""
-      ).slice(
-        0,
-        700
-      );
-
-    if (!item) {
-      continue;
-    }
-
-    if (
-      chars +
-      item.length >
-      maxChars
-    ) {
-      break;
-    }
-
-    output.push(
-      item
-    );
-
-    chars +=
-      item.length;
-  }
-
-  return output.reverse();
-}
-
-
-/* =========================================================
-   DIFFICULTY PLAN
-========================================================= */
-
-function getDifficultyPlan(
-  count,
-  level
-) {
-  /*
-   * Nếu người dùng chọn
-   * riêng một độ khó.
-   */
-  if (
-    level !==
-    "Trộn tất cả"
-  ) {
-    return {
-      easy:
-        level === "Dễ"
-          ? count
-          : 0,
-
-      medium:
-        level ===
-          "Trung bình"
-          ? count
-          : 0,
-
-      hard:
-        level === "Khó"
-          ? count
-          : 0
-    };
-  }
-
-  /*
-   * Chia gần đều.
-   */
-  const base =
-    Math.floor(
-      count / 3
-    );
-
-  const remain =
-    count % 3;
-
-  let easy =
-    base;
-
-  let medium =
-    base;
-
-  let hard =
-    base;
-
-  /*
-   * Ví dụ 10 câu:
-   *
-   * Dễ: 3
-   * Trung bình: 4
-   * Khó: 3
-   */
-  if (
-    remain >= 1
-  ) {
-    medium++;
-  }
-
-  if (
-    remain >= 2
-  ) {
-    hard++;
-  }
-
-  return {
-    easy,
-    medium,
-    hard
-  };
-}
-
-
-/* =========================================================
-   COUNT LEVELS
-========================================================= */
-
-function countLevels(
-  questions
-) {
-  return {
-    easy:
-      questions.filter(
-        q =>
-          q.l === 1
-      ).length,
-
-    medium:
-      questions.filter(
-        q =>
-          q.l === 2
-      ).length,
-
-    hard:
-      questions.filter(
-        q =>
-          q.l === 3
-      ).length
-  };
-}
-
-
-/* =========================================================
-   APPLICATION TARGET
-========================================================= */
-
-function targetAppCount(
-  count,
-  quizMode = "apply"
-) {
-  /*
-   * SOURCE:
-   * 0% vận dụng.
-   */
-  if (
-    quizMode ===
-    "source"
-  ) {
-    return 0;
-  }
-
-  /*
-   * APPLY:
-   * khoảng 20%.
-   */
-  return Math.max(
-    1,
-    Math.round(
-      count * 0.20
-    )
-  );
-}
-
-
-/* =========================================================
-   CHECK ENOUGH QUESTIONS
-========================================================= */
-
-function enoughForTarget(
-  questions,
-  count,
-  level
-) {
-  /*
-   * Chọn riêng
-   * Dễ / Trung bình / Khó.
-   */
-  if (
-    level !==
-    "Trộn tất cả"
-  ) {
-    const targetLevel =
-      normalizeLevel(
-        level
-      );
-
-    return (
-      questions.filter(
-        q =>
-          q.l ===
-          targetLevel
-      ).length >=
-      count
-    );
-  }
-
-  /*
-   * Trộn tất cả:
-   * phải đủ từng nhóm.
-   */
-  const plan =
-    getDifficultyPlan(
-      count,
-      level
-    );
-
-  const current =
-    countLevels(
-      questions
-    );
-
-  return (
-    current.easy >=
-      plan.easy &&
-
-    current.medium >=
-      plan.medium &&
-
-    current.hard >=
-      plan.hard
-  );
-}
-
-
-/* =========================================================
-   SELECT BALANCED QUESTIONS
-========================================================= */
-
-function selectBalancedQuestions(
-  questions,
-  count,
-  level
-) {
-  /*
-   * Chọn riêng
-   * một mức.
-   */
-  if (
-    level !==
-    "Trộn tất cả"
-  ) {
-    const target =
-      normalizeLevel(
-        level
-      );
-
-    return questions
-      .filter(
-        q =>
-          q.l ===
-          target
-      )
-      .slice(
-        0,
-        count
-      );
-  }
-
-  /*
-   * Trộn.
-   */
-  const plan =
-    getDifficultyPlan(
-      count,
-      level
-    );
-
-  const easy =
-    questions.filter(
-      q =>
-        q.l === 1
-    );
-
-  const medium =
-    questions.filter(
-      q =>
-        q.l === 2
-    );
-
-  const hard =
-    questions.filter(
-      q =>
-        q.l === 3
-    );
-
-  return [
-    ...easy.slice(
-      0,
-      plan.easy
-    ),
-
-    ...medium.slice(
-      0,
-      plan.medium
-    ),
-
-    ...hard.slice(
-      0,
-      plan.hard
-    )
-  ].slice(
-    0,
-    count
-  );
-}
-
-
-/* =========================================================
-   REBALANCE APPLICATION
-========================================================= */
-
-function rebalanceApplication(
-  finalQuestions,
-  pool,
-  count,
-  quizMode = "apply"
-) {
-  /*
-   * Chỉ bám sát tài liệu:
-   * không giữ Vận dụng.
-   */
-  if (
-    quizMode ===
-    "source"
-  ) {
-    return finalQuestions.filter(
-      q =>
-        q.k !==
-        "Vận dụng"
-    );
-  }
-
-  const target =
-    targetAppCount(
-      count,
-      quizMode
-    );
-
-  /*
-   * Cho phép dư nhẹ
-   * nhưng không quá khoảng 25%.
-   */
-  const maxApplication =
-    Math.max(
-      target,
-
-      Math.ceil(
-        count * 0.25
-      )
-    );
-
-  let appCount =
-    finalQuestions.filter(
-      q =>
-        q.k ===
-        "Vận dụng"
-    ).length;
-
-  if (
-    appCount <=
-    maxApplication
-  ) {
-    return finalQuestions;
-  }
-
-  const used =
-    new Set(
-      finalQuestions.map(
-        q =>
-          normalize(q.q)
-      )
-    );
-
-  /*
-   * Chỉ thay bằng câu
-   * kiến thức cùng mức độ
-   * để không phá tỷ lệ độ khó.
-   */
-  const knowledgeByLevel = {
-    1:
-      pool.filter(
-        q =>
-          q.k !==
-            "Vận dụng" &&
-
-          q.l === 1 &&
-
-          !used.has(
-            normalize(
-              q.q
-            )
-          )
-      ),
-
-    2:
-      pool.filter(
-        q =>
-          q.k !==
-            "Vận dụng" &&
-
-          q.l === 2 &&
-
-          !used.has(
-            normalize(
-              q.q
-            )
-          )
-      ),
-
-    3:
-      pool.filter(
-        q =>
-          q.k !==
-            "Vận dụng" &&
-
-          q.l === 3 &&
-
-          !used.has(
-            normalize(
-              q.q
-            )
-          )
-      )
-  };
-
-  const output = [
-    ...finalQuestions
-  ];
-
-  for (
-    let i =
-      output.length - 1;
-
-    i >= 0 &&
-    appCount >
-      maxApplication;
-
-    i--
-  ) {
-    if (
-      output[i].k !==
-      "Vận dụng"
-    ) {
-      continue;
-    }
-
-    const replacement =
-      knowledgeByLevel[
-        output[i].l
-      ].shift();
-
-    if (
-      !replacement
-    ) {
-      continue;
-    }
-
-    output[i] =
-      replacement;
-
-    appCount--;
-  }
-
-  return output;
-}
-
-
-/* =========================================================
+/* =====================================================
    LANGUAGE DETECTION
-========================================================= */
+===================================================== */
 
 function detectLanguage(text) {
-  const sample =
-    String(
-      text || ""
-    ).slice(
-      0,
-      8000
-    );
+  const sample = String(text || "")
+    .slice(0, 8000);
 
-  /*
-   * Ký tự đặc trưng
-   * tiếng Việt.
-   */
   const vietnameseChars = (
     sample.match(
       /[ăâđêôơưáàảãạấầẩẫậắằẳẵặéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/gi
     ) || []
   ).length;
 
-  /*
-   * Từ thông dụng
-   * tiếng Việt.
-   */
-  const vietnameseWords = (
-    sample.match(
-      /\b(là|của|và|trong|được|không|có|một|những|các|với|cho|khi|theo|này|đó|từ|để|về|như|nên|phải)\b/gi
-    ) || []
-  ).length;
-
-  /*
-   * Từ thông dụng
-   * tiếng Anh.
-   */
   const englishWords = (
     sample.match(
-      /\b(the|is|are|was|were|and|of|to|in|for|with|that|this|from|as|by|on|an|a|or|be|can|will|which|what|how|when|where)\b/gi
+      /\b(the|is|are|was|were|and|of|to|in|for|with|that|this|from|which|what|how|when|where)\b/gi
     ) || []
   ).length;
 
-  /*
-   * Tiếng Việt.
-   */
-  if (
-    vietnameseChars >= 3 ||
-
-    (
-      vietnameseWords >= 3 &&
-      vietnameseWords >
-      englishWords
-    )
-  ) {
+  if (vietnameseChars >= 3) {
     return "vi";
   }
 
-  /*
-   * Tiếng Anh.
-   */
-  if (
-    englishWords >= 3
-  ) {
+  if (englishWords >= 3) {
     return "en";
   }
 
-  /*
-   * Không xác định rõ:
-   * giữ nguyên ngôn ngữ nguồn.
-   */
   return "same";
 }
 
+function languageInstruction(language) {
+  if (language === "vi") {
+    return `
+All natural-language content must be Vietnamese.
+Questions, options, explanations and topics
+must be written in Vietnamese.
+Do not translate into English.
+`;
+  }
 
-/* =========================================================
-   LANGUAGE INSTRUCTION
-========================================================= */
+  if (language === "en") {
+    return `
+All natural-language content must be English.
+Questions, options, explanations and topics
+must be written in English.
+Do not translate into Vietnamese.
+`;
+  }
 
-function getLanguageInstruction(
-  text
-) {
-  const language =
-    detectLanguage(
-      text
-    );
+  return `
+Preserve the original language
+of the supplied source document.
+`;
+}
 
-  if (
-    language === "vi"
-  ) {
+/* =====================================================
+   DIFFICULTY
+===================================================== */
+
+function difficultyPlan(count, level) {
+  if (level !== "Trộn tất cả") {
     return {
-      code:
-        "vi",
-
-      name:
-        "Vietnamese",
-
-      instruction:
-        "Toàn bộ nội dung tự nhiên trong q, o, e và t phải viết bằng tiếng Việt. Không dịch sang tiếng Anh."
+      1: level === "Dễ" ? count : 0,
+      2: level === "Trung bình" ? count : 0,
+      3: level === "Khó" ? count : 0
     };
   }
 
-  if (
-    language === "en"
-  ) {
-    return {
-      code:
-        "en",
-
-      name:
-        "English",
-
-      instruction:
-        "ALL natural-language content in q, o, e and t MUST be written in English. Do not translate the quiz into Vietnamese."
-    };
-  }
+  const base = Math.floor(count / 3);
+  const remainder = count % 3;
 
   return {
-    code:
-      "same",
-
-    name:
-      "same language as source",
-
-    instruction:
-      "Use the same language as the source material for ALL natural-language content in q, o, e and t. Do not translate it to another language."
+    1: base,
+    2: base + (remainder >= 1 ? 1 : 0),
+    3: base + (remainder >= 2 ? 1 : 0)
   };
 }
 
+function countLevels(questions) {
+  return {
+    1: questions.filter(q => q.l === 1).length,
+    2: questions.filter(q => q.l === 2).length,
+    3: questions.filter(q => q.l === 3).length
+  };
+}
 
-/* =========================================================
-   CREATE PROMPT
-========================================================= */
+function enoughForTarget(
+  questions,
+  count,
+  level
+) {
+  if (level !== "Trộn tất cả") {
+    const target = normalizeLevel(level);
+
+    return questions.filter(
+      q => q.l === target
+    ).length >= count;
+  }
+
+  const plan = difficultyPlan(count, level);
+  const current = countLevels(questions);
+
+  return (
+    current[1] >= plan[1] &&
+    current[2] >= plan[2] &&
+    current[3] >= plan[3]
+  );
+}
+
+function selectBalancedQuestions(
+  questions,
+  count,
+  level
+) {
+  const plan = difficultyPlan(count, level);
+
+  if (level !== "Trộn tất cả") {
+    return questions
+      .filter(q => q.l === normalizeLevel(level))
+      .slice(0, count);
+  }
+
+  const selected = [];
+
+  for (const l of [1, 2, 3]) {
+    selected.push(
+      ...questions
+        .filter(q => q.l === l)
+        .slice(0, plan[l])
+    );
+  }
+
+  const used = new Set(
+    selected.map(q => normalize(q.q))
+  );
+
+  // Nếu AI không phân bố đủ độ khó,
+  // tận dụng các câu hợp lệ còn lại.
+  if (selected.length < count) {
+    const extra = questions.filter(
+      q => !used.has(normalize(q.q))
+    );
+
+    selected.push(
+      ...extra.slice(0, count - selected.length)
+    );
+  }
+
+  return selected.slice(0, count);
+}
+
+/* =====================================================
+   APPLICATION QUESTIONS
+===================================================== */
+
+function applicationTarget(count, quizMode) {
+  if (quizMode === "source") {
+    return 0;
+  }
+
+  return Math.max(
+    1,
+    Math.round(count * 0.20)
+  );
+}
+
+function rebalanceApplication(
+  finalQuestions,
+  pool,
+  count,
+  quizMode
+) {
+  if (quizMode === "source") {
+    return finalQuestions.filter(
+      q => q.k !== "Vận dụng"
+    );
+  }
+
+  const target = applicationTarget(
+    count,
+    quizMode
+  );
+
+  const maxApplication = Math.max(
+    target,
+    Math.ceil(count * 0.25)
+  );
+
+  const output = [...finalQuestions];
+
+  let appCount = output.filter(
+    q => q.k === "Vận dụng"
+  ).length;
+
+  if (appCount <= maxApplication) {
+    return output;
+  }
+
+  for (
+    let i = output.length - 1;
+    i >= 0 && appCount > maxApplication;
+    i--
+  ) {
+    if (output[i].k !== "Vận dụng") {
+      continue;
+    }
+
+    const replacement = pool.find(q =>
+      q.k === "Kiến thức" &&
+      q.l === output[i].l &&
+      !output.some(old =>
+        normalize(old.q) === normalize(q.q)
+      )
+    );
+
+    if (replacement) {
+      output[i] = replacement;
+      appCount--;
+    }
+  }
+
+  return output;
+}
+
+/* =====================================================
+   API PROVIDERS
+===================================================== */
+
+function getProviders() {
+  const providers = [];
+
+  const geminiKey = env("GEMINI_API_KEY");
+  const primary = env("GEMINI_MODEL");
+  const fallback = env("GEMINI_FALLBACK_MODEL");
+
+  const thinking = env(
+    "GEMINI_FALLBACK_THINKING"
+  ).toLowerCase();
+
+  if (
+    geminiKey &&
+    primary &&
+    primary.toLowerCase() !== "none"
+  ) {
+    providers.push({
+      type: "gemini",
+      model: primary,
+      key: geminiKey,
+      thinking
+    });
+  }
+
+  if (
+    geminiKey &&
+    fallback &&
+    fallback.toLowerCase() !== "none" &&
+    fallback !== primary
+  ) {
+    providers.push({
+      type: "gemini",
+      model: fallback,
+      key: geminiKey,
+      thinking
+    });
+  }
+
+  const groqKey = env("GROQ_API_KEY");
+  const groqModel = env("GROQ_MODEL");
+
+  if (
+    groqKey &&
+    groqModel &&
+    groqModel.toLowerCase() !== "none"
+  ) {
+    providers.push({
+      type: "groq",
+      model: groqModel,
+      key: groqKey
+    });
+  }
+
+  return providers;
+}
+
+/* =====================================================
+   PROMPT
+===================================================== */
 
 function createPrompt({
   text,
   count,
-  totalCount,
   level,
   subject,
   exclude,
-  round,
-  applicationNeeded,
+  quizMode,
+  language,
   difficultyNeeded,
-  quizMode = "apply"
+  applicationNeeded,
+  compact
 }) {
-  /*
-   * Xin dư câu
-   * để backend còn lọc.
-   */
-  const askCount =
-    Math.min(
-      70,
+  const askCount = Math.min(
+    compact ? 6 : 12,
+    Math.max(
+      count + 2,
+      Math.ceil(count * 1.25)
+    )
+  );
 
-      Math.max(
-        count + 4,
+  const modeRule = quizMode === "source"
+    ? `
+SOURCE MODE:
 
-        Math.ceil(
-          count * 1.35
-        )
-      )
-    );
+- Create questions based directly on the document.
+- Every correct answer must be verifiable
+  from the supplied content.
+- Do not introduce outside knowledge.
+- Do not invent new scenarios.
+- Do not create application questions.
+- Every question must use "k": "Kiến thức".
+`
+    : `
+APPLICATION MODE:
 
-  const promptExclude =
-    compactExclude(
-      exclude
-    );
-
-  const languageInfo =
-    getLanguageInstruction(
-      text
-    );
-
-  let difficultyText;
-
-  /*
-   * Hướng dẫn độ khó.
-   */
-  if (
-    level ===
-    "Trộn tất cả"
-  ) {
-    difficultyText = `
-Trong toàn bộ đề,
-Dễ / Trung bình / Khó
-phải gần cân bằng.
-
-Hiện hệ thống còn thiếu khoảng:
-
-- ${Math.max(
-      0,
-      difficultyNeeded.easy
-    )} câu Dễ.
-
-- ${Math.max(
-      0,
-      difficultyNeeded.medium
-    )} câu Trung bình.
-
-- ${Math.max(
-      0,
-      difficultyNeeded.hard
-    )} câu Khó.
-
-Hãy ưu tiên tạo
-những mức đang thiếu trước.
-
-Không dồn phần lớn câu
-vào cùng một mức độ.
+- Target about 80% knowledge questions.
+- Target about 20% application questions.
+- Approximately ${applicationNeeded}
+  application questions are still needed.
+- Application scenarios must be grounded
+  in knowledge from the document.
+- Do not invent unsupported facts.
+- Use "k": "Vận dụng" for application questions.
+- Use "k": "Kiến thức" for knowledge questions.
 `;
 
-  } else {
-    difficultyText = `
-Tất cả câu hỏi
-ở vòng này
-phải ở mức:
+  const difficultyRule = level === "Trộn tất cả"
+    ? `
+Balance difficulty levels.
 
+Still needed:
+Easy: ${difficultyNeeded[1]}
+Medium: ${difficultyNeeded[2]}
+Hard: ${difficultyNeeded[3]}
+
+Prioritize the levels that are missing.
+`
+    : `
+All questions must have difficulty:
 ${level}
 `;
-  }
 
-  /*
-   * 2 chế độ câu hỏi.
-   */
-  const questionModeText =
-    quizMode === "source"
-
-      ? `
-==================================================
-CHẾ ĐỘ: CHỈ BÁM SÁT TÀI LIỆU
-==================================================
-
-- 100% câu hỏi phải có căn cứ trực tiếp trong tài liệu.
-
-- Không tạo câu Vận dụng.
-
-- Không tạo tình huống mới ngoài tài liệu.
-
-- Không tự thêm bối cảnh, ví dụ hoặc trường hợp thực tế
-  mà tài liệu không cung cấp.
-
-- Không yêu cầu người học áp dụng kiến thức
-  vào một trường hợp mới.
-
-- Không suy diễn vượt quá nội dung tài liệu.
-
-- Mỗi đáp án đúng phải có thể kiểm chứng
-  trực tiếp từ nội dung nguồn.
-
-Các dạng câu nên dùng:
-
-- Khái niệm
-- Đặc điểm
-- Chức năng
-- Mục đích
-- Vai trò
-- Phân biệt
-- Nguyên nhân - kết quả
-- Chọn phát biểu đúng
-- Chọn phát biểu đúng nhất
-- Nhận diện nội dung
-- Điều kiện
-- Trình tự / quy trình
-- Suy luận trực tiếp từ nội dung đã nêu
-
-Tất cả câu phải ghi:
-
-"k": "Kiến thức"
-`
-
-      : `
-==================================================
-CHẾ ĐỘ: CÓ VẬN DỤNG
-==================================================
-
-Mục tiêu toàn bộ đề:
-
-- Khoảng 80% câu Kiến thức.
-- Khoảng 20% câu Vận dụng / Tình huống.
-
-Hiện hệ thống còn thiếu khoảng:
-
-${applicationNeeded}
-
-câu Vận dụng
-để đạt tỷ lệ mục tiêu.
-
-Không tạo quá nhiều câu vận dụng.
-
-Không biến phần lớn đề
-thành câu hỏi tình huống.
-
-Câu vận dụng có thể:
-
-- Đưa kiến thức vào tình huống mới.
-- Yêu cầu chọn cách xử lý phù hợp.
-- Yêu cầu suy luận kết quả.
-- Yêu cầu áp dụng kiến thức đã học
-  vào trường hợp cụ thể.
-
-Kiến thức dùng để trả lời
-vẫn phải xuất phát từ tài liệu.
-
-Không tạo câu vận dụng giả
-chỉ bằng cách thêm tên người hoặc công ty
-rồi phía sau vẫn hỏi lại định nghĩa.
-`;
+  const excluded = exclude
+    .slice(compact ? -12 : -35)
+    .map(q => String(q).slice(0, 300));
 
   return `
-You are an expert teacher who creates high-quality multiple-choice quizzes.
+You are a professional teacher specializing
+in high-quality multiple-choice quizzes.
 
 ==================================================
-OUTPUT LANGUAGE / NGÔN NGỮ ĐẦU RA
+LANGUAGE
 ==================================================
 
-${languageInfo.instruction}
+${languageInstruction(language)}
 
 IMPORTANT:
-
-- The source material determines the quiz language.
-
-- English source
-  → English questions,
-  choices,
-  explanations
-  and topic labels.
-
-- Vietnamese source
-  → Vietnamese questions,
-  choices,
-  explanations
-  and topic labels.
-
-- Do not translate the source
-  into another language.
-
-- If the source uses another language,
-  preserve that language.
-
-- JSON field names
-  and the internal values
-  "Kiến thức" / "Vận dụng"
-  must remain exactly as specified
-  because the application uses them internally.
-
+Internal JSON keys must remain unchanged.
+The values "Kiến thức" and "Vận dụng"
+must also remain in Vietnamese.
 
 ==================================================
-NHIỆM VỤ
+TASK
 ==================================================
 
-Đây là vòng tạo câu hỏi số ${round}.
+Create approximately ${askCount}
+NEW multiple-choice questions.
 
-Dựa CHỈ vào tài liệu bên dưới,
-hãy tạo khoảng ${askCount} câu hỏi MỚI.
-
-Hệ thống đang cần thêm ${count} câu
-để hoàn thành bộ đề ${totalCount} câu.
-
-Chủ đề:
-
-"${subject || "Chưa xác định"}"
-
+Subject:
+${subject || "Source document"}
 
 ==================================================
-YÊU CẦU BẮT BUỘC
+QUESTION MODE
 ==================================================
 
-- Mỗi câu có đúng 4 đáp án.
-
-- Chỉ có 1 đáp án đúng.
-
-- Không tạo câu điền từ.
-
-- Không tạo câu chỗ trống.
-
-- Không dùng dấu ___
-  để che nội dung.
-
-- Không dùng kiến thức
-  ngoài tài liệu.
-
-- Không tự bịa kiến thức
-  để đủ câu.
-
-- Không tạo hai câu
-  kiểm tra cùng một ý
-  rồi chỉ thay đổi cách diễn đạt.
-
-- Không chỉ đổi tên người
-  hoặc tên công ty
-  rồi xem là câu mới.
-
-- Không chỉ đảo thứ tự đáp án.
-
-- Đáp án nhiễu phải hợp lý.
-
-- Các lựa chọn phải
-  cùng phạm vi kiến thức.
-
-- Lời giải phải
-  ít nhất 20 ký tự.
-
-- Lời giải phải giải thích
-  vì sao đáp án đúng.
-
+${modeRule}
 
 ==================================================
-ĐA DẠNG KIỂU CÂU HỎI
+DIFFICULTY
 ==================================================
 
-Hãy kết hợp nhiều dạng câu.
-
-KHÔNG chỉ tạo
-câu hỏi định nghĩa.
-
-Các dạng được phép
-và nên sử dụng:
-
-1. Khái niệm.
-
-2. Đặc điểm.
-
-3. Chức năng.
-
-4. Mục đích.
-
-5. Vai trò.
-
-6. Phân biệt hai khái niệm.
-
-7. Nguyên nhân - kết quả.
-
-8. Chọn phát biểu đúng.
-
-9. Chọn phát biểu đúng nhất.
-
-10. Nhận diện trường hợp.
-
-11. Mối quan hệ
-giữa các khái niệm.
-
-12. Điều kiện áp dụng.
-
-13. Trình tự
-hoặc quy trình.
-
-14. Suy luận trực tiếp
-từ nội dung đã học.
-
-15. Tình huống
-áp dụng kiến thức.
-
-
-LƯU Ý:
-
-Câu Kiến thức
-KHÔNG có nghĩa là
-chỉ được hỏi định nghĩa.
-
-Câu Kiến thức
-vẫn có thể là:
-
-- Trung bình.
-
-- Khó.
-
-- Phân biệt.
-
-- Phân tích nguyên nhân.
-
-- Chọn phát biểu đúng nhất.
-
-- Suy luận trực tiếp
-  từ tài liệu.
-
+${difficultyRule}
 
 ==================================================
-PHÂN BỐ ĐỘ KHÓ
+MANDATORY RULES
 ==================================================
 
-${difficultyText}
+1. Exactly 4 answer options per question.
 
+2. Exactly 1 correct answer.
 
-${questionModeText}
+3. Do not create fill-in-the-blank questions.
 
+4. Do not use blank underscores.
 
-==================================================
-CHỐNG TRÙNG
-==================================================
+5. Do not introduce unsupported knowledge.
 
-Các câu dưới đây
-đã xuất hiện.
+6. Avoid duplicate questions.
 
-TUYỆT ĐỐI KHÔNG LẶP.
+7. Do not merely reword an existing question.
 
-Không lặp nguyên câu.
+8. Do not just rearrange answer options.
 
-Không lặp cùng một ý.
+9. Answer choices must be distinct.
 
-Không chỉ diễn đạt lại.
+10. Wrong choices must be plausible.
 
-Không chỉ đổi
-thứ tự đáp án.
+11. The explanation must have at least
+    20 characters.
 
-Không chỉ đổi
-tên nhân vật.
+12. Explain why the correct answer is correct.
 
+13. Use diverse question styles:
+    - Concepts
+    - Features
+    - Functions
+    - Purposes
+    - Roles
+    - Comparisons
+    - Causes and effects
+    - Relationships
+    - Processes
+    - Conditions
+    - Correct statements
+    - Direct reasoning
+    - Application when allowed
 
-${JSON.stringify(
-  promptExclude
-)}
+14. Do not create only definition questions.
 
-
-==================================================
-ƯU TIÊN KIẾN THỨC MỚI
-==================================================
-
-Ưu tiên:
-
-- khái niệm chưa hỏi
-
-- đặc điểm chưa hỏi
-
-- chức năng chưa hỏi
-
-- vai trò chưa hỏi
-
-- nguyên nhân chưa hỏi
-
-- kết quả chưa hỏi
-
-- mối quan hệ chưa hỏi
-
-- quy trình chưa hỏi
-
-- ví dụ khác
-
-- tình huống khác
-
-- góc nhìn khác
-
-
-Nếu tài liệu có nhiều phần,
-hãy phân bố câu hỏi
-trên nhiều phần.
-
+15. Preserve the language of the document.
 
 ==================================================
-JSON
+DUPLICATE PREVENTION
 ==================================================
 
-Chỉ trả JSON hợp lệ.
+Previously used questions:
 
-KHÔNG Markdown.
+${JSON.stringify(excluded)}
 
-KHÔNG viết nội dung
-bên ngoài JSON.
+Do not repeat these questions or their ideas.
 
+==================================================
+OUTPUT JSON
+==================================================
 
-Nhắc lại:
+Return valid JSON only.
 
-${languageInfo.instruction}
+No Markdown.
+No extra text.
 
-
-Cấu trúc:
+Use this structure:
 
 {
   "questions": [
     {
-      "q": "Nội dung câu hỏi",
+      "q": "Question text",
       "o": [
-        "Đáp án A",
-        "Đáp án B",
-        "Đáp án C",
-        "Đáp án D"
+        "Option A",
+        "Option B",
+        "Option C",
+        "Option D"
       ],
       "c": 0,
       "l": 2,
-      "e": "Lời giải chi tiết",
-      "t": "Chủ đề nhỏ",
+      "e": "Detailed explanation",
+      "t": "Topic",
       "k": "Kiến thức"
     }
   ],
   "note": ""
 }
 
-
-Quy ước:
+RULES:
 
 c:
-
 0 = A
 1 = B
 2 = C
 3 = D
 
-
 l:
-
-1 = Dễ
-2 = Trung bình
-3 = Khó
-
+1 = Easy
+2 = Medium
+3 = Hard
 
 k:
-
-chỉ dùng:
-
-"Kiến thức"
-
-hoặc
-
-"Vận dụng"
-
+"Kiến thức" or "Vận dụng"
 
 ==================================================
-TÀI LIỆU / SOURCE MATERIAL
+SOURCE DOCUMENT
 ==================================================
 
 ${text}
 `;
 }
 
-
-/* =========================================================
-   PARSE JSON
-========================================================= */
+/* =====================================================
+   JSON PARSER
+===================================================== */
 
 function parseQuiz(raw) {
   if (
-    typeof raw !==
-      "string" ||
-
+    typeof raw !== "string" ||
     !raw.trim()
   ) {
-    throw new Error(
-      "AI không trả nội dung."
-    );
+    throw new Error("EMPTY_AI_RESPONSE");
   }
 
-  let text =
-    raw
-      .trim()
-      .replace(
-        /^```(?:json)?\s*/i,
-        ""
-      )
-      .replace(
-        /\s*```$/,
-        ""
-      );
+  let content = raw.trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
 
-  /*
-   * Cho phép AI
-   * lỡ thêm chữ trước/sau JSON.
-   */
-  const firstBrace =
-    text.indexOf("{");
+  const first = content.indexOf("{");
+  const last = content.lastIndexOf("}");
 
-  const lastBrace =
-    text.lastIndexOf("}");
+  if (first >= 0 && last > first) {
+    content = content.slice(first, last + 1);
+  }
+
+  let parsed;
+
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    throw new Error("INVALID_AI_JSON");
+  }
 
   if (
-    firstBrace >= 0 &&
-    lastBrace >
-      firstBrace
+    !parsed ||
+    !Array.isArray(parsed.questions)
   ) {
-    text =
-      text.slice(
-        firstBrace,
-        lastBrace + 1
-      );
+    throw new Error("INVALID_QUIZ_STRUCTURE");
   }
 
-  const quiz =
-    JSON.parse(
-      text
-    );
-
-  if (
-    !quiz ||
-
-    !Array.isArray(
-      quiz.questions
-    )
-  ) {
-    throw new Error(
-      "AI trả sai cấu trúc JSON."
-    );
-  }
-
-  return quiz;
+  return parsed;
 }
 
+/* =====================================================
+   HTTP ERROR HANDLING
+===================================================== */
 
-/* =========================================================
-   HTTP
-========================================================= */
+function providerErrorInfo(raw) {
+  try {
+    const data = JSON.parse(raw);
+    const err = data?.error || {};
+
+    const code = String(
+      err.status ||
+      err.code ||
+      err.type ||
+      "UNKNOWN"
+    );
+
+    // Chỉ ghi mã lỗi an toàn.
+    // Không ghi raw response hoặc API key.
+    return code
+      .replace(/[^a-zA-Z0-9_ -]/g, "")
+      .slice(0, 80);
+
+  } catch {
+    return "UNKNOWN";
+  }
+}
 
 async function postJSON(
   url,
@@ -1687,684 +905,412 @@ async function postJSON(
   body,
   timeoutMs
 ) {
-  const controller =
-    new AbortController();
+  const controller = new AbortController();
 
-  const timer =
-    setTimeout(
-      () =>
-        controller.abort(),
-      timeoutMs
-    );
+  const timer = setTimeout(
+    () => controller.abort(),
+    timeoutMs
+  );
 
   try {
-    const response =
-      await fetch(
-        url,
-        {
-          method:
-            "POST",
+    const response = await fetch(url, {
+      method: "POST",
 
-          signal:
-            controller.signal,
+      signal: controller.signal,
 
-          headers: {
-            "Content-Type":
-              "application/json",
+      headers: {
+        "Content-Type": "application/json",
+        ...headers
+      },
 
-            ...headers
-          },
+      body: JSON.stringify(body)
+    });
 
-          body:
-            JSON.stringify(
-              body
-            )
-        }
+    const raw = await response.text();
+
+    if (!response.ok) {
+      const error = new Error(
+        "PROVIDER_HTTP_ERROR"
       );
 
-    if (
-      !response.ok
-    ) {
-      const error =
-        new Error(
-          "Provider HTTP " +
-          response.status
-        );
+      error.status = response.status;
 
-      error.status =
-        response.status;
+      error.providerCode = providerErrorInfo(
+        raw
+      );
 
       throw error;
     }
 
-    return (
-      await response.json()
-    );
+    try {
+      return JSON.parse(raw);
+    } catch {
+      throw new Error(
+        "INVALID_PROVIDER_RESPONSE"
+      );
+    }
 
   } finally {
-    clearTimeout(
-      timer
-    );
+    clearTimeout(timer);
   }
 }
 
-
-/* =========================================================
-   GEMINI
-========================================================= */
+/* =====================================================
+   GEMINI API
+===================================================== */
 
 async function requestGemini(
   provider,
   prompt,
-  timeoutMs
+  timeoutMs,
+  count
 ) {
-  const generationConfig = {
-    responseMimeType:
-      "application/json",
+  const model = provider.model.replace(
+    /^models\//,
+    ""
+  );
 
-    maxOutputTokens:
+  const generationConfig = {
+    responseMimeType: "application/json",
+
+    maxOutputTokens: clamp(
+      count * 450,
+      2048,
       8192
+    )
   };
 
-  /*
-   * Gemini 3+
-   */
+  // Gemini 3+ có thể dùng thinkingLevel.
   if (
-    /^gemini-[3-9]/i.test(
-      provider.model
-    ) &&
-
-    [
-      "minimal",
-      "low",
-      "medium",
-      "high"
-    ].includes(
-      provider.thinking
-    )
+    /^gemini-[3-9]/i.test(model) &&
+    ["minimal", "low", "medium", "high"]
+      .includes(provider.thinking)
   ) {
-    generationConfig
-      .thinkingConfig = {
-      thinkingLevel:
-        provider.thinking
+    generationConfig.thinkingConfig = {
+      thinkingLevel: provider.thinking
     };
   }
 
-  /*
-   * Gemini cũ.
-   */
-  if (
-    !/^gemini-[3-9]/i.test(
-      provider.model
-    )
-  ) {
-    generationConfig
-      .temperature =
-      0.8;
+  if (!/^gemini-[3-9]/i.test(model)) {
+    generationConfig.temperature = 0.7;
   }
 
-  const model =
-    provider.model
-      .replace(
-        /^models\//,
-        ""
-      );
+  const url =
+    "https://generativelanguage.googleapis.com" +
+    "/v1beta/models/" +
+    encodeURIComponent(model) +
+    ":generateContent";
 
-  const data =
-    await postJSON(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-        model
-      )}:generateContent`,
+  const data = await postJSON(
+    url,
 
-      {
-        "x-goog-api-key":
-          provider.key
-      },
+    {
+      "x-goog-api-key": provider.key
+    },
 
-      {
-        contents: [
-          {
-            role:
-              "user",
+    {
+      contents: [
+        {
+          role: "user",
 
-            parts: [
-              {
-                text:
-                  prompt
-              }
-            ]
-          }
-        ],
+          parts: [
+            {
+              text: prompt
+            }
+          ]
+        }
+      ],
 
-        generationConfig
-      },
+      generationConfig
+    },
 
-      timeoutMs
-    );
-
-  const raw =
-    data
-      .candidates?.[0]
-      ?.content
-      ?.parts
-
-      ?.filter(
-        part =>
-          !part.thought
-      )
-
-      .map(
-        part =>
-          part.text ||
-          ""
-      )
-
-      .join("");
-
-  return parseQuiz(
-    raw
+    timeoutMs
   );
+
+  const parts =
+    data?.candidates?.[0]?.content?.parts || [];
+
+  const output = parts
+    .filter(part => !part.thought)
+    .map(part => part.text || "")
+    .join("");
+
+  return parseQuiz(output);
 }
 
-
-/* =========================================================
-   GROQ
-========================================================= */
+/* =====================================================
+   GROQ API
+===================================================== */
 
 async function requestGroq(
   provider,
   prompt,
-  timeoutMs
+  timeoutMs,
+  count
 ) {
-  const data =
-    await postJSON(
-      "https://api.groq.com/openai/v1/chat/completions",
+  const data = await postJSON(
+    "https://api.groq.com/openai/v1/chat/completions",
 
-      {
-        Authorization:
-          "Bearer " +
-          provider.key
-      },
+    {
+      Authorization: `Bearer ${provider.key}`
+    },
 
-      {
-        model:
-          provider.model,
+    {
+      model: provider.model,
 
-        messages: [
-          {
-            role:
-              "system",
+      messages: [
+        {
+          role: "system",
 
-            content:
-              "You create multiple-choice quizzes from supplied source material. Preserve the source material's language for questions, choices, explanations and topic labels. Return valid JSON only."
-          },
-
-          {
-            role:
-              "user",
-
-            content:
-              prompt
-          }
-        ],
-
-        response_format: {
-          type:
-            "json_object"
+          content:
+            "Create multiple-choice questions from the supplied document. Preserve source language. Return JSON only."
         },
 
-        temperature:
-          0.8,
+        {
+          role: "user",
+          content: prompt
+        }
+      ],
 
-        max_tokens:
-          8192
+      response_format: {
+        type: "json_object"
       },
 
-      timeoutMs
-    );
+      temperature: 0.6,
+
+      max_tokens: clamp(
+        count * 400,
+        1200,
+        3000
+      )
+    },
+
+    timeoutMs
+  );
 
   return parseQuiz(
-    data
-      .choices?.[0]
-      ?.message
-      ?.content
+    data?.choices?.[0]?.message?.content
   );
 }
 
+/* =====================================================
+   ERROR CLASSIFICATION
+===================================================== */
 
-/* =========================================================
-   PROVIDERS
-========================================================= */
-
-function getProviders() {
-  const providers = [];
-
-  const geminiKey =
-    env(
-      "GEMINI_API_KEY"
-    );
-
-  const primary =
-    env(
-      "GEMINI_MODEL"
-    );
-
-  const fallback =
-    env(
-      "GEMINI_FALLBACK_MODEL"
-    );
-
-  const thinking =
-    env(
-      "GEMINI_FALLBACK_THINKING"
-    ).toLowerCase();
-
-  /*
-   * Gemini chính.
-   */
-  if (
-    geminiKey &&
-
-    primary &&
-
-    primary.toLowerCase() !==
-      "none"
-  ) {
-    providers.push({
-      type:
-        "gemini",
-
-      model:
-        primary,
-
-      key:
-        geminiKey,
-
-      thinking
-    });
+function errorCategory(error) {
+  if (error.name === "AbortError") {
+    return "TIMEOUT";
   }
 
-  /*
-   * Gemini dự phòng.
-   */
-  if (
-    geminiKey &&
+  switch (error.status) {
+    case 400:
+      return "INVALID_REQUEST";
 
-    fallback &&
+    case 401:
+    case 403:
+      return "AUTH_OR_PERMISSION";
 
-    fallback.toLowerCase() !==
-      "none" &&
+    case 404:
+      return "MODEL_NOT_FOUND";
 
-    fallback !==
-      primary
-  ) {
-    providers.push({
-      type:
-        "gemini",
+    case 413:
+      return "PAYLOAD_TOO_LARGE";
 
-      model:
-        fallback,
+    case 429:
+      return "RATE_LIMIT";
 
-      key:
-        geminiKey,
+    case 500:
+    case 502:
+    case 503:
+      return "PROVIDER_UNAVAILABLE";
 
-      thinking
-    });
+    default:
+      return error.message || "UNKNOWN";
   }
-
-  /*
-   * Groq dự phòng.
-   */
-  const groqKey =
-    env(
-      "GROQ_API_KEY"
-    );
-
-  const groqModel =
-    env(
-      "GROQ_MODEL"
-    );
-
-  if (
-    groqKey &&
-
-    groqModel &&
-
-    groqModel.toLowerCase() !==
-      "none"
-  ) {
-    providers.push({
-      type:
-        "groq",
-
-      model:
-        groqModel,
-
-      key:
-        groqKey
-    });
-  }
-
-  return providers;
 }
 
-
-/* =========================================================
+/* =====================================================
    MAIN NETLIFY FUNCTION
-========================================================= */
+===================================================== */
 
-exports.handler =
-async function handler(event) {
+exports.handler = async function handler(event) {
 
-  /* CORS */
-  if (
-    event.httpMethod ===
-    "OPTIONS"
-  ) {
-    return reply(
-      204,
-      {}
-    );
+  /* ---------------------------
+     CORS
+  --------------------------- */
+
+  if (event.httpMethod === "OPTIONS") {
+    return reply(204, {});
   }
 
-  /*
-   * Chỉ POST.
-   */
-  if (
-    event.httpMethod !==
-    "POST"
-  ) {
-    return reply(
-      405,
-      {
-        error:
-          "Chỉ hỗ trợ POST."
-      }
-    );
+  if (event.httpMethod !== "POST") {
+    return reply(405, {
+      error: "Chỉ hỗ trợ POST."
+    });
   }
+
+  /* ---------------------------
+     PARSE INPUT
+  --------------------------- */
 
   let input;
 
-  /*
-   * Parse JSON input.
-   */
   try {
-    input =
-      JSON.parse(
-        event.body ||
-        "{}"
-      );
-
-  } catch {
-    return reply(
-      400,
-      {
-        error:
-          "Dữ liệu JSON không hợp lệ."
-      }
+    input = JSON.parse(
+      event.body || "{}"
     );
+  } catch {
+    return reply(400, {
+      error: "Dữ liệu JSON không hợp lệ."
+    });
   }
 
   if (
     !input ||
-
-    typeof input !==
-      "object" ||
-
-    Array.isArray(
-      input
-    )
+    typeof input !== "object" ||
+    Array.isArray(input)
   ) {
-    return reply(
-      400,
-      {
-        error:
-          "Dữ liệu gửi lên không hợp lệ."
-      }
-    );
+    return reply(400, {
+      error: "Dữ liệu gửi lên không hợp lệ."
+    });
   }
 
-
-  /* =====================================================
-     TEXT
-  ===================================================== */
+  /* ---------------------------
+     DOCUMENT
+  --------------------------- */
 
   const text =
-    typeof input.text ===
-      "string"
-
+    typeof input.text === "string"
       ? input.text
           .trim()
-          .slice(
-            0,
-            16000
-          )
-
+          .slice(0, MAX_DOCUMENT_CHARS)
       : "";
 
-
-  /* =====================================================
+  /* ---------------------------
      SUBJECT
-  ===================================================== */
+  --------------------------- */
 
   const subject =
-    typeof input.subject ===
-      "string"
-
+    typeof input.subject === "string"
       ? input.subject
           .trim()
-          .slice(
-            0,
-            300
-          )
-
+          .slice(0, 300)
       : "";
 
-
-  /* =====================================================
+  /* ---------------------------
      LEVEL
-  ===================================================== */
+  --------------------------- */
 
-  const level =
-    input.level;
+  const level = input.level;
 
-
-  /* =====================================================
+  /* ---------------------------
      QUIZ MODE
-  ===================================================== */
+  --------------------------- */
 
-  /*
-   * source =
-   * Chỉ bám sát tài liệu.
-   *
-   * apply =
-   * Có vận dụng.
-   *
-   * Nếu frontend cũ
-   * chưa gửi quizMode
-   * thì mặc định source.
-   */
-  const quizMode =
-    QUIZ_MODES.has(
-      input.quizMode
-    )
+  const quizMode = QUIZ_MODES.has(
+    input.quizMode
+  )
+    ? input.quizMode
+    : "source";
 
-      ? input.quizMode
+  /* ---------------------------
+     NUMBER OF QUESTIONS
+  --------------------------- */
 
-      : "source";
+  const requested = Number(
+    input.count
+  );
 
+  const count = Number.isFinite(requested)
+    ? clamp(
+        Math.floor(requested),
+        1,
+        MAX_QUESTIONS
+      )
+    : 10;
 
-  /* =====================================================
-     COUNT
-  ===================================================== */
-
-  const requested =
-    Number(
-      input.count
-    );
-
-  const count =
-    Number.isFinite(
-      requested
-    )
-
-      ? Math.min(
-          Math.max(
-            Math.floor(
-              requested
-            ),
-            1
-          ),
-          50
-        )
-
-      : 10;
-
-
-  /* =====================================================
-     EXCLUDE
-  ===================================================== */
+  /* ---------------------------
+     EXCLUDED QUESTIONS
+  --------------------------- */
 
   const exclude =
-    Array.isArray(
-      input.exclude
-    )
-
+    Array.isArray(input.exclude)
       ? input.exclude
-
-          .filter(
-            q =>
-              typeof q ===
-                "string" &&
-              q.trim()
+          .filter(q =>
+            typeof q === "string" &&
+            q.trim()
           )
-
-          .slice(
-            -600
+          .slice(-220)
+          .map(q =>
+            q.trim().slice(0, 700)
           )
-
-          .map(
-            q =>
-              q
-                .trim()
-                .slice(
-                  0,
-                  700
-                )
-          )
-
       : [];
 
-
-  /* =====================================================
+  /* ---------------------------
      VALIDATE INPUT
-  ===================================================== */
+  --------------------------- */
 
-  if (
-    text.length < 100
-  ) {
-    return reply(
-      400,
-      {
-        error:
-          "Tài liệu cần ít nhất 100 ký tự."
-      }
-    );
+  if (text.length < 100) {
+    return reply(400, {
+      error:
+        "Tài liệu cần ít nhất 100 ký tự."
+    });
   }
 
-  if (
-    !LEVELS.has(
-      level
-    )
-  ) {
-    return reply(
-      400,
-      {
-        error:
-          "Mức độ câu hỏi không hợp lệ."
-      }
-    );
+  if (!LEVELS.has(level)) {
+    return reply(400, {
+      error:
+        "Mức độ câu hỏi không hợp lệ."
+    });
   }
 
-
-  /* =====================================================
+  /* ---------------------------
      PROVIDERS
-  ===================================================== */
+  --------------------------- */
 
-  const providers =
-    getProviders();
+  const providers = getProviders();
 
-  if (
-    !providers.length
-  ) {
-    return reply(
-      500,
-      {
-        error:
-          "Chưa có cặp API key và model hợp lệ trong cấu hình."
-      }
-    );
+  if (!providers.length) {
+    return reply(500, {
+      error:
+        "Chưa có cặp API key và model hợp lệ trong cấu hình."
+    });
   }
 
+  /* ---------------------------
+     INITIAL STATE
+  --------------------------- */
 
-  /* =====================================================
-     STATE
-  ===================================================== */
-
+  const language = detectLanguage(text);
   const questions = [];
+  const failures = [];
 
-  let note = "";
+  const disabledProviders = new Set();
 
-  let receivedResponse =
-    false;
+  const deadline =
+    Date.now() + MAX_TOTAL_TIME;
+
+  const maxAttempts = Math.max(
+    MAX_ATTEMPTS,
+    providers.length * 3
+  );
+
+  const plan = difficultyPlan(
+    count,
+    level
+  );
+
+  const appTarget = applicationTarget(
+    count,
+    quizMode
+  );
 
   let attempts = 0;
+  let note = "";
 
-  /*
-   * Tổng thời gian.
-   */
-  const deadline =
-    Date.now() +
-    50000;
-
-  /*
-   * Nhiều vòng
-   * để bù câu thiếu.
-   */
-  const MAX_ATTEMPTS =
-    Math.max(
-      6,
-
-      providers.length *
-      4
-    );
-
-
-  /* =====================================================
-     TARGET DIFFICULTY
-  ===================================================== */
-
-  const difficultyPlan =
-    getDifficultyPlan(
-      count,
-      level
-    );
-
-
-  /* =====================================================
-     TARGET APPLICATION
-  ===================================================== */
-
-  const applicationTarget =
-    targetAppCount(
-      count,
-      quizMode
-    );
-
-
-  /* =====================================================
+  /* =================================================
      GENERATION LOOP
-  ===================================================== */
+  ================================================= */
 
   while (
     !enoughForTarget(
@@ -2373,309 +1319,336 @@ async function handler(event) {
       level
     ) &&
 
-    attempts <
-      MAX_ATTEMPTS
+    attempts < maxAttempts &&
+
+    Date.now() < deadline - 4500
   ) {
-    const remainingMs =
-      deadline -
-      Date.now();
+    let progress = false;
+    let activeProviders = 0;
 
-    /*
-     * Không gọi request mới
-     * nếu gần hết thời gian.
-     */
-    if (
-      remainingMs <
-      4500
-    ) {
-      break;
-    }
+    for (const provider of providers) {
 
+      if (
+        enoughForTarget(
+          questions,
+          count,
+          level
+        )
+      ) {
+        break;
+      }
 
-    /* =================================================
-       PROVIDER
-    ================================================= */
+      if (
+        attempts >= maxAttempts ||
+        Date.now() >= deadline - 4500
+      ) {
+        break;
+      }
 
-    const provider =
-      providers[
-        attempts %
-        providers.length
-      ];
+      const providerId =
+        provider.type + ":" + provider.model;
 
-    attempts++;
+      if (
+        disabledProviders.has(providerId)
+      ) {
+        continue;
+      }
 
+      activeProviders++;
 
-    /* =================================================
-       EXCLUDE
-    ================================================= */
+      const isGroq =
+        provider.type === "groq";
 
-    const allExcluded = [
-      ...exclude,
+      /* ---------------------------
+         CURRENT DIFFICULTY
+      --------------------------- */
 
-      ...questions.map(
-        q =>
-          q.q
-      )
-    ];
-
-
-    /* =================================================
-       CURRENT LEVELS
-    ================================================= */
-
-    const currentLevels =
-      countLevels(
+      const current = countLevels(
         questions
       );
 
-    const difficultyNeeded = {
-      easy:
-        Math.max(
+      const difficultyNeeded = {
+        1: Math.max(
           0,
-
-          difficultyPlan.easy -
-          currentLevels.easy
+          plan[1] - current[1]
         ),
 
-      medium:
-        Math.max(
+        2: Math.max(
           0,
-
-          difficultyPlan.medium -
-          currentLevels.medium
+          plan[2] - current[2]
         ),
 
-      hard:
-        Math.max(
+        3: Math.max(
           0,
-
-          difficultyPlan.hard -
-          currentLevels.hard
+          plan[3] - current[3]
         )
-    };
+      };
 
+      /* ---------------------------
+         REMAINING QUESTIONS
+      --------------------------- */
 
-    /* =================================================
-       APPLICATION NEEDED
-    ================================================= */
+      const remaining = Math.max(
+        0,
+        count - questions.length
+      );
 
-    const currentApplication =
-      questions.filter(
-        q =>
-          q.k ===
-          "Vận dụng"
+      const missingByLevel =
+        difficultyNeeded[1] +
+        difficultyNeeded[2] +
+        difficultyNeeded[3];
+
+      const needed = level === "Trộn tất cả"
+        ? missingByLevel
+        : remaining;
+
+      if (needed <= 0) {
+        break;
+      }
+
+      /* ---------------------------
+         BATCH SIZE
+      --------------------------- */
+
+      const batch = Math.min(
+        needed,
+        isGroq
+          ? GROQ_BATCH
+          : GEMINI_BATCH
+      );
+
+      /* ---------------------------
+         APPLICATION COUNT
+      --------------------------- */
+
+      const appCurrent = questions.filter(
+        q => q.k === "Vận dụng"
       ).length;
 
-    const applicationNeeded =
-      Math.max(
+      const appNeeded = Math.max(
         0,
-
-        applicationTarget -
-        currentApplication
+        appTarget - appCurrent
       );
 
+      /* ---------------------------
+         LIMIT DOCUMENT SIZE
+      --------------------------- */
 
-    /* =================================================
-       HOW MANY NEEDED
-    ================================================= */
+      // Groq thường có giới hạn thấp hơn.
+      // Sử dụng đoạn tài liệu ngắn hơn.
+      const source = isGroq
+        ? text.slice(0, 4500)
+        : text.slice(0, 14000);
 
-    let needed;
+      /* ---------------------------
+         EXCLUDED QUESTIONS
+      --------------------------- */
 
-    if (
-      level ===
-      "Trộn tất cả"
-    ) {
-      needed =
-        difficultyNeeded.easy +
+      const allExcluded = [
+        ...exclude,
+        ...questions.map(q => q.q)
+      ];
 
-        difficultyNeeded.medium +
+      /* ---------------------------
+         BUILD PROMPT
+      --------------------------- */
 
-        difficultyNeeded.hard;
+      const prompt = createPrompt({
+        text: source,
 
-    } else {
-      const targetLevel =
-        normalizeLevel(
-          level
-        );
-
-      needed =
-        count -
-
-        questions.filter(
-          q =>
-            q.l ===
-            targetLevel
-        ).length;
-    }
-
-    needed =
-      Math.max(
-        1,
-        needed
-      );
-
-
-    /* =================================================
-       PROMPT
-    ================================================= */
-
-    const prompt =
-      createPrompt({
-        text,
-
-        count:
-          needed,
-
-        totalCount:
-          count,
+        count: batch,
 
         level,
 
         subject,
 
-        exclude:
-          allExcluded,
+        exclude: allExcluded,
 
-        round:
-          attempts,
+        quizMode,
 
-        applicationNeeded,
+        language,
 
         difficultyNeeded,
 
-        quizMode
+        applicationNeeded: appNeeded,
+
+        compact: isGroq
       });
 
+      /* ---------------------------
+         TIMEOUT
+      --------------------------- */
 
-    /* =================================================
-       TIMEOUT
-    ================================================= */
+      const remainingMs =
+        deadline - Date.now();
 
-    const timeoutMs =
-      Math.min(
-        26000,
-
+      const timeoutMs = Math.min(
+        24000,
         Math.max(
-          4500,
-
-          Math.floor(
-            remainingMs /
-            2
-          )
+          3000,
+          remainingMs - 2000
         )
       );
 
+      attempts++;
 
-    /* =================================================
-       CALL AI
-    ================================================= */
+      /* ---------------------------
+         REQUEST AI
+      --------------------------- */
 
-    try {
-      const quiz =
-        provider.type ===
-          "groq"
-
+      try {
+        const result = isGroq
           ? await requestGroq(
               provider,
               prompt,
-              timeoutMs
+              timeoutMs,
+              batch
             )
 
           : await requestGemini(
               provider,
               prompt,
-              timeoutMs
+              timeoutMs,
+              batch
             );
 
-      receivedResponse =
-        true;
+        /* -------------------------
+           CLEAN QUESTIONS
+        ------------------------- */
 
-
-      /* =================================================
-         CLEAN RESULT
-      ================================================= */
-
-      const fresh =
-        cleanQuestions(
-          quiz.questions,
-
+        const fresh = cleanQuestions(
+          result.questions,
           allExcluded,
-
-          Math.max(
-            needed * 3,
-            12
-          ),
-
           quizMode
         );
 
-      questions.push(
-        ...fresh
-      );
+        if (fresh.length > 0) {
+          questions.push(
+            ...fresh.slice(
+              0,
+              Math.max(
+                0,
+                count - questions.length
+              )
+            )
+          );
 
+          progress = true;
 
-      /* =================================================
-         NOTE
-      ================================================= */
+          if (
+            typeof result.note === "string" &&
+            result.note.trim()
+          ) {
+            note = result.note.trim();
+          }
 
-      if (
-        typeof quiz.note ===
-          "string" &&
-
-        quiz.note.trim()
-      ) {
-        note =
-          quiz.note.trim();
-      }
-
-    } catch (error) {
-      /*
-       * Không log:
-       * API key
-       * hoặc nội dung tài liệu.
-       */
-      console.error(
-        "Quiz provider failed:",
-        {
-          provider:
-            provider.type,
-
-          model:
-            provider.model,
-
-          status:
-            error.status ||
-            null,
-
-          type:
-            error.name
+          // Có câu hợp lệ thì tiếp tục
+          // vòng sau để bù câu thiếu.
+          break;
         }
-      );
+
+        console.warn(
+          "Quiz provider returned no usable questions",
+          {
+            provider: provider.type,
+            model: provider.model,
+            returned: result.questions.length
+          }
+        );
+
+      } catch (error) {
+
+        const info = {
+          provider: provider.type,
+          model: provider.model,
+          status: error.status || null,
+          category: errorCategory(error),
+          providerCode:
+            error.providerCode || null
+        };
+
+        // Không ghi API key hoặc tài liệu.
+        console.error(
+          "Quiz provider failed:",
+          info
+        );
+
+        failures.push(info);
+
+        /* -------------------------
+           DISABLE BAD PROVIDER
+        ------------------------- */
+
+        if (
+          [400, 401, 403, 404, 413]
+            .includes(error.status)
+        ) {
+          disabledProviders.add(
+            providerId
+          );
+        }
+      }
+    }
+
+    /* ---------------------------
+       PREVENT USELESS RETRIES
+    --------------------------- */
+
+    if (
+      !progress ||
+      activeProviders === 0
+    ) {
+      break;
     }
   }
 
-
-  /* =====================================================
+  /* =================================================
      ALL PROVIDERS FAILED
-  ===================================================== */
+  ================================================= */
 
-  if (
-    !questions.length &&
-    !receivedResponse
-  ) {
-    return reply(
-      502,
-      {
-        error:
-          "Các dịch vụ AI đều chưa tạo được đề. Kiểm tra API key, model và hạn mức rồi thử lại."
-      }
+  if (!questions.length) {
+
+    const statuses = failures.map(
+      item => item.status
     );
+
+    let message =
+      "Các dịch vụ AI đều chưa tạo được đề.";
+
+    if (statuses.includes(400)) {
+      message +=
+        " Có yêu cầu API không hợp lệ (400).";
+    }
+
+    if (statuses.includes(413)) {
+      message +=
+        " Một yêu cầu vượt giới hạn dữ liệu (413).";
+    }
+
+    if (statuses.includes(429)) {
+      message +=
+        " Đã gặp giới hạn sử dụng API (429).";
+    }
+
+    if (
+      statuses.includes(401) ||
+      statuses.includes(403)
+    ) {
+      message +=
+        " API key hoặc quyền truy cập gặp vấn đề.";
+    }
+
+    message +=
+      " Hãy kiểm tra Netlify Function Logs.";
+
+    return reply(502, {
+      error: message
+    });
   }
 
-
-  /* =====================================================
-     FINAL DIFFICULTY
-  ===================================================== */
+  /* =================================================
+     SELECT FINAL QUESTIONS
+  ================================================= */
 
   let finalQuestions =
     selectBalancedQuestions(
@@ -2683,11 +1656,6 @@ async function handler(event) {
       count,
       level
     );
-
-
-  /* =====================================================
-     FINAL APPLICATION
-  ===================================================== */
 
   finalQuestions =
     rebalanceApplication(
@@ -2697,91 +1665,75 @@ async function handler(event) {
       quizMode
     );
 
+  if (!finalQuestions.length) {
+    return reply(502, {
+      error:
+        "AI chưa tạo được câu hỏi hợp lệ."
+    });
+  }
 
-  /* =====================================================
-     META
-  ===================================================== */
+  /* =================================================
+     METADATA
+  ================================================= */
 
-  const counts =
-    countLevels(
-      finalQuestions
-    );
+  const finalLevels = countLevels(
+    finalQuestions
+  );
 
-  const applicationCount =
+  const applicationQuestions =
     finalQuestions.filter(
-      q =>
-        q.k ===
-        "Vận dụng"
+      q => q.k === "Vận dụng"
     ).length;
 
+  const knowledgeQuestions =
+    finalQuestions.length -
+    applicationQuestions;
 
-  /* =====================================================
-     RESPONSE
-  ===================================================== */
+  /* =================================================
+     FINAL RESPONSE
+  ================================================= */
 
-  return reply(
-    200,
-    {
-      questions:
-        finalQuestions,
+  return reply(200, {
 
-      meta: {
-        requested:
-          count,
+    questions: finalQuestions,
 
-        generated:
-          finalQuestions.length,
+    meta: {
+      requested: count,
 
-        easy:
-          counts.easy,
+      generated:
+        finalQuestions.length,
 
-        medium:
-          counts.medium,
+      easy:
+        finalLevels[1],
 
-        hard:
-          counts.hard,
+      medium:
+        finalLevels[2],
 
-        knowledgeQuestions:
-          finalQuestions.length -
-          applicationCount,
+      hard:
+        finalLevels[3],
 
-        applicationQuestions:
-          applicationCount,
+      knowledgeQuestions,
 
-        /*
-         * en   = English
-         * vi   = Vietnamese
-         * same = ngôn ngữ khác
-         */
-        sourceLanguage:
-          detectLanguage(
-            text
-          ),
+      applicationQuestions,
 
-        /*
-         * source =
-         * chỉ bám sát tài liệu
-         *
-         * apply =
-         * có vận dụng
-         */
-        quizMode,
+      sourceLanguage:
+        language,
 
-        attempts
-      },
+      quizMode,
 
-      note:
-        finalQuestions.length <
-        count
+      attempts
+    },
 
-          ? [
-              `Tạo được ${finalQuestions.length}/${count} câu hợp lệ.`,
+    note:
+      finalQuestions.length < count
 
-              note ||
-              "Tài liệu có thể chưa đủ nội dung mới hoặc AI chưa trả đủ đúng mức độ yêu cầu."
-            ].join(" ")
+        ? [
+            `Tạo được ${finalQuestions.length}/${count} câu hợp lệ.`,
 
-          : ""
-    }
-  );
+            note ||
+            "Có thể chưa đủ thời gian, nội dung hoặc hạn mức API để tạo đủ câu."
+          ].join(" ")
+
+        : ""
+  });
 };
