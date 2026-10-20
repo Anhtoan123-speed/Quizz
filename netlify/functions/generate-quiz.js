@@ -251,7 +251,15 @@ function similarity(a, b) {
   return common / (a.size + b.size - common);
 }
 
-function isRepeated(first, second) {
+const GENERIC_ANSWERS = new Set(["co", "khong", "dung", "sai", "tat ca", "khac"]);
+
+/* Đáp án đúng đã chuẩn hóa (chỉ có khi câu hỏi có đủ o và c). */
+function answerKey(value) {
+  if (!value || !Array.isArray(value.o)) return "";
+  return norm(value.o[value.c]);
+}
+
+function isRepeated(first, second, strict = true) {
   const a = features(first);
   const b = features(second);
 
@@ -260,6 +268,17 @@ function isRepeated(first, second) {
 
   const lexical = similarity(a.unique, b.unique);
   const phrase = similarity(a.pairs, b.pairs);
+
+  // Cùng một đáp án đúng => gần như chắc chắn hỏi lại cùng một ý.
+  const ka = answerKey(first);
+  const kb = answerKey(second);
+  if (
+    ka && ka === kb && ka.length >= 2 && !/^[0-9 ]*$/.test(ka) &&
+    !GENERIC_ANSWERS.has(ka) &&
+    (strict || lexical >= 0.3)
+  ) {
+    return true;
+  }
 
   if (a.topic && b.topic && a.topic !== b.topic && lexical < 0.9) {
     return false;
@@ -272,8 +291,8 @@ function isRepeated(first, second) {
   );
 }
 
-function isDuplicate(question, existing) {
-  return existing.some(item => isRepeated(question, item));
+function isDuplicate(question, existing, strict = true) {
+  return existing.some(item => isRepeated(question, item, strict));
 }
 
 /* ===== PROMPTS ===== */
@@ -289,7 +308,7 @@ function generationPrompt({
 }) {
   const levelInstruction = level === "Trộn tất cả"
     ? "Trộn câu dễ, trung bình, khó tương đối đều; l lần lượt là 1, 2, 3."
-    : `Tất cả câu hỏi ở mức level;l={levelNumber(level)}.`;
+    : `Tất cả câu hỏi ở mức ${level}; l=${levelNumber(level)}.`;
 
   const modeInstruction = mode === "apply"
     ? "Tất cả câu hỏi phải yêu cầu vận dụng, giải quyết tình huống hoặc bài tập dựa trên tài liệu. Không tự tạo dữ kiện ngoài tài liệu."
@@ -314,13 +333,14 @@ Quy tắc:
 - Nếu tài liệu không đủ căn cứ xác định một đáp án duy nhất, bỏ câu hỏi đó.
 - Không tạo câu điền vào chỗ trống.
 - Mỗi câu kiểm tra một mục tiêu học tập khác nhau; không diễn đạt lại câu khác.
+- Mỗi câu phải có đáp án đúng khác nhau; không hỏi lại cùng một từ, một khái niệm hay một ý bằng cách hỏi ngược hoặc đổi cách diễn đạt.
 - Không lặp tình huống chỉ bằng cách đổi tên nhân vật.
 - ${modeInstruction}
 - ${levelInstruction}
 - Chủ đề: ${subject || "nội dung tài liệu"}.
 
 Không lặp lại hoặc diễn đạt lại các câu sau:
-${JSON.stringify(existing.slice(-30).map(item => String(item).slice(0, 180)))}
+${JSON.stringify(existing.slice(-40).map(item => String(item).slice(0, 180)))}
 
 TÀI LIỆU NGUỒN:
 ${text}
@@ -578,12 +598,16 @@ exports.handler = async function handler(event) {
 
   const level = LEVELS.has(input.level) ? input.level : null;
   const mode = input.quizMode === "apply" ? "apply" : "source";
+  const strict = mode === "source";
 
   const requestedCount = Number.isFinite(Number(input.count))
     ? Math.floor(Number(input.count))
     : 10;
 
   const count = clamp(requestedCount, 1, 50);
+
+  /* Số thứ tự đợt do client gửi lên: xoay vùng tài liệu để các đợt không lặp lại cùng một đoạn. */
+  const baseBatch = clamp(Math.floor(Number(input.batch)) || 0, 0, 1000);
 
   const exclude = Array.isArray(input.exclude)
     ? input.exclude
@@ -636,7 +660,7 @@ exports.handler = async function handler(event) {
     let madeProgress = false;
 
     for (const provider of availableProviders) {
-      const providerId = `provider.type:{provider.model}`;
+      const providerId = `${provider.type}:${provider.model}`;
 
       if (
         disabledProviders.has(providerId) ||
@@ -655,14 +679,14 @@ exports.handler = async function handler(event) {
       );
 
       const chunkSize = provider.type === "groq" ? 5200 : 10000;
-      const source = text.length <= chunkSize
-        ? text
-        : text.slice(
-            (cycle++ * Math.floor(chunkSize * 0.7)) %
-              Math.max(1, text.length - chunkSize + 1),
-            ((cycle - 1) * Math.floor(chunkSize * 0.7)) %
-              Math.max(1, text.length - chunkSize + 1) + chunkSize
-          );
+      let source = text;
+
+      if (text.length > chunkSize) {
+        const span = Math.max(1, text.length - chunkSize + 1);
+        const step = Math.floor(chunkSize * 0.7);
+        const start = ((baseBatch + cycle++) * step) % span;
+        source = text.slice(start, start + chunkSize);
+      }
 
       const knownQuestions = [
         ...exclude,
@@ -704,12 +728,12 @@ exports.handler = async function handler(event) {
             continue;
           }
 
-          if (isDuplicate(question, [...found, ...candidates])) {
+          if (isDuplicate(question, [...found, ...candidates], strict)) {
             duplicateCount++;
             continue;
           }
 
-          if (isDuplicate(question, exclude)) {
+          if (isDuplicate(question, exclude, strict)) {
             duplicateCount++;
             continue;
           }
@@ -749,9 +773,17 @@ exports.handler = async function handler(event) {
           auditTimeout
         );
 
-        const fresh = approved.filter(question =>
-          !isDuplicate(question, [...found, ...approved.filter(item => item !== question)])
-        );
+        /* Lọc tuần tự: giữ câu đầu tiên, bỏ câu sau nếu trùng. (Bản cũ so từng câu với
+           tất cả câu còn lại nên khi hai câu trùng nhau thì bị loại cả hai.) Đáp án có
+           thể đã được kiểm định sửa nên phải kiểm tra lại sau bước này. */
+        const fresh = [];
+        for (const question of approved) {
+          if (isDuplicate(question, [...found, ...fresh], strict)) {
+            duplicateCount++;
+            continue;
+          }
+          fresh.push(question);
+        }
 
         if (fresh.length) {
           found.push(...fresh.slice(0, remaining));
@@ -833,7 +865,7 @@ exports.handler = async function handler(event) {
       elapsedMs: Date.now() - startTime
     },
     note: questions.length < count
-      ? `Tạo được questions.length/{count} câu đã qua kiểm định. ` +
+      ? `Tạo được ${questions.length}/${count} câu đã qua kiểm định. ` +
         "Tài liệu có thể chưa đủ nội dung hoặc câu hỏi còn lại không xác định được đáp án chắc chắn."
       : ""
   });
@@ -850,4 +882,3 @@ if (process.env.NODE_ENV === "test") {
     detectLanguage
   };
 }
-
