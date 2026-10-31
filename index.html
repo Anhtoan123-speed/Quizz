@@ -540,7 +540,7 @@ async function uploadExamFiles(files){
  try{
   for(let i=0;i<list.length;i++){const f=list[i];status('Đang đọc '+(i+1)+'/'+list.length+': '+f.name);try{const text=(await readF(f,s=>status(f.name+': '+s))).trim();if(text.length<50)throw Error('Nội dung quá ngắn để tạo câu hỏi.');loaded.push({name:f.name,text})}catch(e){errors.push(f.name+': '+(e.message||'Không đọc được file'))}}
   if(!loaded.length)throw Error(errors.join('\n')||'Không đọc được nội dung tài liệu.');
-  const quota=Math.max(100,Math.floor((12000-loaded.length*150)/loaded.length));
+  const quota=Math.max(100,Math.floor((150000-loaded.length*150)/loaded.length));
   S.temp={id:'tmp',name:loaded.map(d=>d.name).join(', '),subject:'',tags:'',text:loaded.map(d=>'## '+d.name.slice(0,120)+'\n'+d.text.slice(0,quota)).join('\n\n')};
   S.sel=['tmp'];S.mode='exam';S.examSource='doc';S.afterDocMode='';V.mk();status('Đã đọc tài liệu. Đang tạo đề luyện thi...');
   await build();if(S.v==='ready')S.examFiles=[];if(errors.length&&S.v==='ready'){S.notice=[S.notice,'Bỏ qua file không đọc được: '+errors.join('; ')].filter(Boolean).join(' ');V.ready()}
