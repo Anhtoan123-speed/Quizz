@@ -1,15 +1,15 @@
-/* ===== scope-addon.js (v2) — Quizz Ôn Tập =====
- * 1) Nhận diện cấu trúc tài liệu tự động + chọn phạm vi thủ công (state tách bạch, không tự khôi phục)
- * 2) Ô yêu cầu bằng ngôn ngữ tự nhiên -> AI xác định phạm vi, trích xuất nguyên văn, xem trước, gửi đúng phần đó
+/* ===== scope-addon.js (v3) — Quizz Ôn Tập =====
+ * 1) Nhận diện cấu trúc tài liệu tự động + chọn phạm vi thủ công
+ * 2) Ô yêu cầu bằng ngôn ngữ tự nhiên -> AI xác định phạm vi, trích xuất nguyên văn, xem trước
  * 3) Xóa từng file / xóa tất cả file đã tải lên
- * 4) Game Quiz: chọn số câu tùy ý (tới 200), tạo theo từng đợt
- * 5) Chống câu hỏi trùng mạnh hơn
+ * 4) Game Quiz: chọn số câu tùy ý (tới 200)
+ * 5) Tạo câu hỏi THEO TỪNG ĐOẠN tài liệu, nhớ đoạn nào đã khai thác -> không cạn câu sớm, ít trùng
  * Dán SAU script chính, ngay trước thẻ đóng body.
  */
 (function () {
   'use strict';
-  if (window.__scopeAddon2) return;
-  window.__scopeAddon2 = true;
+  if (window.__scopeAddon3) return;
+  window.__scopeAddon3 = true;
 
   const MAX_GAME = 200;
   const EXAMPLES = [
@@ -47,7 +47,7 @@
   </style>`);
 
   /* ===================================================================
-   *  PHÂN TÍCH CẤU TRÚC (tự động, không cần mẫu nhận diện)
+   *  PHÂN TÍCH CẤU TRÚC (tự động)
    * =================================================================== */
   const KW1 = 'ngày|ngay|day|buổi|buoi|session|tuần|tuan|week|chương|chuong|chapter|unit|module';
   const KW2 = 'bài|bai|lesson|mục|muc|section|phần|phan|part|topic|chủ đề|chu de';
@@ -142,7 +142,7 @@
   }
 
   /* ===================================================================
-   *  TRẠNG THÁI PHẠM VI (mỗi tài liệu một state, tách danh sách gốc khỏi danh sách đang chọn)
+   *  TRẠNG THÁI PHẠM VI
    * =================================================================== */
   const isSaved = id => id !== 'draft' && id !== 'tmp';
   const savedScopes = () => ld('docScopes', {});
@@ -157,7 +157,6 @@
     }
     return S.scopes[id];
   }
-  /* Đồng bộ danh sách mục: lần đầu chọn tất cả; sau đó CHỈ thêm mục mới xuất hiện, không bao giờ khôi phục mục đã bỏ chọn. */
   function syncSel(sc, secs) {
     const keys = secs.map(s => s.key);
     if (sc.selKeys === null) sc.selKeys = [...keys];
@@ -193,7 +192,7 @@
   const exStale = (sc, text) => !!(sc.ex && sc.ex.status === 'done' && sc.ex.sig !== sigOf(text));
   const stripPages = t => String(t).replace(PAGE_STRIP, '').replace(/\n{3,}/g, '\n\n').trim();
 
-  /* Nội dung THỰC TẾ sẽ gửi cho AI tạo quiz — dùng chung cho xem trước và build() */
+  /* Nội dung THỰC TẾ sẽ gửi cho AI tạo quiz */
   function scopedText(id, full) {
     const sc = getScope(id), an = analyze(full);
     if (sc.ex && sc.ex.status === 'done') {
@@ -255,7 +254,6 @@
   const sleep = ms => new Promise(ok => setTimeout(ok, ms));
   async function apiRetry(body) { try { return await api(body); } catch (e) { await sleep(1500); return api(body); } }
 
-  /* Chuyển một mục của kế hoạch thành khoảng dòng (1-based) */
   function resolveItem(an, it) {
     const N = an.N;
     if (it.all) return { from: 1, to: N };
@@ -279,12 +277,11 @@
   async function runPool(tasks, conc, fn) {
     let next = 0, err = null; const out = [];
     async function w() { while (next < tasks.length && !err) { const i = next++; try { out[i] = await fn(tasks[i], i); } catch (e) { err = e; } } }
-    await Promise.all(Array.from({ length: conc }, w));
+    await Promise.all(Array.from({ length: Math.min(conc, tasks.length) || 1 }, w));
     if (err) throw err;
     return out;
   }
 
-  /* Thực thi kế hoạch trên văn bản gốc: cắt nguyên văn theo dòng, lọc từng dòng nếu cần (AI chỉ trả số dòng) */
   async function executePlan(id, text, plan, req, run, say) {
     const sc = getScope(id), an = analyze(text), N = an.N;
     const alive = () => { if (sc.run !== run) throw Error('__cancel'); };
@@ -312,7 +309,6 @@
       return out;
     };
 
-    /* Chỉ chọn theo tiêu đề / trang / dòng: cắt nguyên văn, không cần AI lọc thêm */
     if (!plan.scan) {
       const idxs = []; for (let i = 0; i < N; i++) if (inc[i] && !PAGERE.test(an.lines[i])) idxs.push(i);
       let t = ''; let prev = -10;
@@ -321,7 +317,6 @@
       return { status: 'done', req, sig: sigOf(text), text: t, picks: picksOf(inc), lines: idxs.length, chars: t.length, ai: false };
     }
 
-    /* Cần lọc nội dung từng dòng: chia đoạn nhỏ, AI trả về số dòng cần giữ */
     const cand = []; for (let i = 0; i < N; i++) if (inc[i] && an.lines[i].trim() && !PAGERE.test(an.lines[i])) cand.push(i);
     const chunks = []; let cur = [], size = 0;
     cand.forEach(i => { const len = Math.min(an.lines[i].length, 400); if (cur.length && (size + len > 4200 || cur.length >= 120)) { chunks.push(cur); cur = []; size = 0; } cur.push(i); size += len; });
@@ -351,7 +346,6 @@
     }
     if (!kept.size) return { status: 'not_found', message: 'Không có nội dung nào trong phạm vi đã chọn khớp với yêu cầu của bạn.', suggestions: hintTitles, req };
 
-    /* Giữ ngữ cảnh: thêm các tiêu đề chứa nội dung đã giữ (nếu tiêu đề đó nằm trong phạm vi được chọn) */
     const keepFlags = new Uint8Array(N);
     kept.forEach(i => { keepFlags[i] = 1; });
     an.heads.forEach(h => {
@@ -363,7 +357,6 @@
     return { status: 'done', req, sig: sigOf(text), text: t, picks: picksOf(keepFlags), lines: idxs.length, chars: t.length, ai: true, limit };
   }
 
-  /* Chạy một thao tác dài với trạng thái bận / hủy / lỗi */
   async function job(id, fn) {
     const sc = getScope(id);
     if (sc.busy) return;
@@ -623,7 +616,6 @@
     S.files = []; delete S.scopes.draft; keep(); fl(); refresh('draft'); toast('Đã xóa tất cả file đã tải.', 's');
   };
 
-  /* Luyện thi: xóa từng file đã chọn */
   function examChips() {
     const nm = $('#examFileNames'); if (!nm) return;
     nm.innerHTML = (S.examFiles || []).map((f, i) => `<span class="sc-tag">${esc(f.name)} <button type="button" class="sc-x" aria-label="Xóa ${esc(f.name)}" onclick="scExamDel(${i})">✕</button></span>`).join(' ');
@@ -685,8 +677,6 @@
     let c = 0; wa.forEach(w => { if (wb.has(w)) c++; });
     const un = wa.size + wb.size - c, jac = un ? c / un : 0;
     const ca = aiNorm(a.o[a.c]), cb = aiNorm(b.o[b.c]);
-    /* Hai câu cùng khuôn mẫu ("Từ X có nghĩa là gì?") chỉ khác từ X không phải câu trùng:
-       đề giống nhau chỉ tính là trùng khi các lựa chọn cũng chồng lấn. */
     const oa = new Set(a.o.map(aiNorm)), ob = new Set(b.o.map(aiNorm));
     let oc = 0; oa.forEach(x => { if (ob.has(x)) oc++; });
     const osim = oc / (oa.size + ob.size - oc || 1);
@@ -699,13 +689,15 @@
   }
   function dedupeStrong(list) { const out = []; for (const x of list) if (!out.some(y => sameQ(x, y))) out.push(x); return out; }
 
+  const clean_ = a => window.clean(a); // clean() của script chính (lọc câu hỏi hợp lệ)
+
   async function callAI2(text, n, lv, sj, excluded, qmode, batch) {
     const ctl = new AbortController(), tm = setTimeout(() => ctl.abort(), 70000);
     let res, data;
     try {
       res = await fetch('/.netlify/functions/generate-quiz', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: ctl.signal,
-        body: JSON.stringify({ text, count: n, level: lv, subject: sj, exclude: excluded.filter(x => typeof x === 'string').slice(-80), quizMode: qmode, batch })
+        body: JSON.stringify({ text, count: n, level: lv, subject: sj, exclude: excluded.filter(x => typeof x === 'string').slice(-30), quizMode: qmode, batch, noWindow: true })
       });
       data = await res.json().catch(() => ({}));
     } catch (e) {
@@ -715,32 +707,114 @@
     if (!res.ok) throw Error(data.error || ((res.status === 429 || res.status === 503) ? 'Hệ thống AI đang quá tải. Hãy thử lại sau.' : 'Máy chủ chưa tạo được câu hỏi.'));
     return { list: clean_(data.questions), note: typeof data.note === 'string' ? data.note : '' };
   }
-  const clean_ = a => window.clean(a); // hàm clean() của script chính (lọc câu hỏi hợp lệ)
 
-  async function gen2(text, n, lv, sj, qmode, prog) {
-    const source = text.slice(0, 24000);
-    let hash = 2166136261;
-    for (let i = 0; i < source.length; i++) hash = Math.imul(hash ^ source.charCodeAt(i), 16777619);
-    const key = 'aiSeenV3_' + (hash >>> 0) + '_' + qmode;
-    const previous = ld(key, []).filter(x => typeof x === 'string').slice(-150);
+  /* ===================================================================
+   *  TẠO CÂU HỎI THEO TỪNG ĐOẠN TÀI LIỆU
+   * =================================================================== */
+  const CH_SIZE = 3600, PER_CALL = 8;
+  const capOf = t => Math.max(3, Math.floor(t.length / 250));
+  const hashStr = s => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+  const histKey = h => 'qhV4_' + h;
+  function loadHist(h) { const s = ld(histKey(h), null) || {}; return { used: s.used || {}, qs: Array.isArray(s.qs) ? s.qs : [], cycle: s.cycle || 0 }; }
+  window.qhReset = () => {
+    try { Object.keys(localStorage).filter(k => k.startsWith('qhV4_') || k.startsWith('aiSeenV')).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+    toast('Đã xóa lịch sử chống trùng câu hỏi.', 's');
+  };
+
+  function splitChunks(text) {
+    const out = []; let cur = '';
+    const push = () => { const t = cur.trim(); if (t) out.push(t); cur = ''; };
+    for (let ln of String(text).split('\n')) {
+      while (ln.length > CH_SIZE) { push(); out.push(ln.slice(0, CH_SIZE)); ln = ln.slice(CH_SIZE); }
+      if (cur.length + ln.length + 1 > CH_SIZE) push();
+      cur += ln + '\n';
+    }
+    push();
+    const merged = [];
+    out.forEach(t => {
+      const last = merged[merged.length - 1];
+      if (last && t.length < 800 && last.length + t.length < CH_SIZE * 1.25) merged[merged.length - 1] = last + '\n' + t;
+      else merged.push(t);
+    });
+    return merged.length ? merged : [String(text).trim()];
+  }
+
+  /* So với lịch sử (chỉ có câu hỏi + đáp án đúng) */
+  function sameHist(x, h) {
+    const na = aiNorm(x.q), nb = aiNorm(h.q);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+    const wa = new Set(wordsOf(x.q)), wb = new Set(wordsOf(h.q));
+    let c = 0; wa.forEach(w => { if (wb.has(w)) c++; });
+    const jac = c / (wa.size + wb.size - c || 1), ans = aiNorm(h.a);
+    return jac >= 0.8 || (ans.length >= 2 && ans === aiNorm(x.o[x.c]) && jac >= 0.35);
+  }
+
+  /* Chọn các đoạn còn "mới" nhất và chia đều số câu */
+  function choose(chunks, rem, need) {
+    const K = Math.min(chunks.length, Math.max(1, Math.ceil(need / 5)));
+    const order = chunks.map((c, i) => ({ i, free: rem[i], ratio: rem[i] / capOf(c), r: Math.random() }))
+      .filter(x => x.free > 0).sort((a, b) => b.ratio - a.ratio || a.r - b.r);
+    const picks = order.slice(0, K).map(x => ({ i: x.i, k: 0 }));
+    let left = need, extra = K;
+    for (;;) {
+      let moved = false;
+      for (const p of picks) if (left > 0 && p.k < rem[p.i]) { p.k++; left--; moved = true; }
+      if (left <= 0) break;
+      if (!moved) { if (extra >= order.length) break; picks.push({ i: order[extra++].i, k: 0 }); }
+    }
+    return picks.filter(p => p.k > 0);
+  }
+
+  async function gen3(text, n, lv, sj, qmode, prog) {
+    const source = String(text).slice(0, 300000);
+    let chunks = splitChunks(source).filter(c => c.length >= 100);
+    if (!chunks.length) chunks = [source];
+    const hk = hashStr(source), st = loadHist(hk);
     DUPMODE = qmode === 'apply' ? 'apply' : 'source';
-    const out = [], maxCalls = Math.ceil(n / 12) + 8;
-    let note = '', lastErr = null, calls = 0, fails = 0, stale = 0;
-    while (out.length < n && calls < maxCalls && fails < 3 && stale < 3) {
-      const ask = Math.min(n - out.length, 20);
-      const excl = [...out.map(x => x.q), ...(calls < 2 ? previous.slice(-30) : [])];
-      let r;
-      try { r = await callAI2(source, ask, lv, sj, excl, qmode, calls++); }
-      catch (e) { lastErr = e; fails++; await sleep(1500); continue; }
-      note = r.note || note;
-      let added = 0;
-      for (const x of r.list) { if (out.length >= n) break; if (!out.some(y => sameQ(x, y))) { out.push(x); added++; } }
-      stale = added ? 0 : stale + 1;
-      if (prog) prog(out.length, n);
+    S.genInfo = { reset: false, chunks: chunks.length };
+    const out = []; let note = '', lastErr = null, rounds = 0, resets = 0;
+
+    while (out.length < n && rounds < 5) {
+      rounds++;
+      let rem = chunks.map((c, i) => Math.max(0, capOf(c) - (st.used[i] || 0)));
+      if (!rem.some(x => x > 0)) {
+        if (resets >= 1) break;
+        resets++; st.used = {}; st.cycle++; S.genInfo.reset = true;
+        rem = chunks.map(c => capOf(c));
+      }
+      const picks = choose(chunks, rem, n - out.length);
+      if (!picks.length) break;
+
+      await runPool(picks, 3, async p => {
+        const t = chunks[p.i], mine = [];
+        let got = 0, miss = 0, calls = 0, errs = 0;
+        while (got < p.k && out.length < n && calls < 4 && miss < 2) {
+          calls++;
+          const ask = Math.min(p.k - got + 1, PER_CALL);
+          const excl = [...st.qs.filter(h => h.ci === p.i).map(h => h.q), ...mine.map(x => x.q)].slice(-30);
+          let r;
+          try { r = await callAI2(t, ask, lv, sj, excl, qmode, 0); }
+          catch (e) { lastErr = e; errs++; miss++; await sleep(1200); continue; }
+          note = r.note || note;
+          let added = 0;
+          for (const x of r.list) {
+            if (got >= p.k || out.length >= n) break;
+            if (out.some(y => sameQ(x, y)) || st.qs.some(h => sameHist(x, h))) continue;
+            x._ci = p.i; out.push(x); mine.push(x); got++; added++;
+          }
+          miss = added ? 0 : miss + 1;
+        }
+        /* Đoạn trả thiếu mà không do lỗi mạng => coi như đã cạn */
+        st.used[p.i] = (got >= p.k || errs) ? (st.used[p.i] || 0) + got : capOf(t);
+        if (prog) prog(out.length, n);
+      });
     }
     if (!out.length) throw lastErr || Error(note || 'Không thể tạo câu hỏi. Kiểm tra tài liệu hoặc cấu hình AI.');
-    sv(key, [...previous, ...out.map(x => x.q)].slice(-150));
-    return out;
+    const res = out.slice(0, n);
+    st.qs = [...st.qs, ...res.map(x => ({ q: x.q, a: x.o[x.c], ci: x._ci }))].slice(-600);
+    sv(histKey(hk), st);
+    return res;
   }
 
   /* ===================================================================
@@ -771,8 +845,9 @@
     say('Việc này có thể mất từ 10 đến 60 giây' + (n > 20 ? ' (số câu lớn sẽ tạo theo từng đợt)' : '') + '.');
     try {
       const subj = [...new Set(ds.map(d => d.subject).filter(Boolean))].join(', ') + (S.f.topic ? ' – ' + S.f.topic : '') + (scopeLabel ? ' – ' + scopeLabel : '');
-      const pool = dedupeStrong(await gen2(parts.join('\n\n'), n, S.f.lv, subj, S.f.qmode || 'source', (k, t) => say('Đã tạo ' + k + '/' + t + ' câu...')));
-      if (pool.length < n) S.notice = 'Tài liệu/phạm vi đã chọn hiện chỉ đủ dữ liệu để tạo ' + pool.length + ' câu không trùng (bạn yêu cầu ' + n + ' câu). Hãy mở rộng phạm vi nếu cần thêm.';
+      const pool = dedupeStrong(await gen3(parts.join('\n\n'), n, S.f.lv, subj, S.f.qmode || 'source', (k, t) => say('Đã tạo ' + k + '/' + t + ' câu...')));
+      if (pool.length < n) S.notice = 'Phạm vi đã chọn hiện chỉ đủ dữ liệu để tạo ' + pool.length + ' câu không trùng (bạn yêu cầu ' + n + ' câu). Hãy mở rộng phạm vi nếu cần thêm.';
+      if (S.genInfo && S.genInfo.reset) S.notice = (S.notice ? S.notice + ' ' : '') + 'Bạn đã dùng hết phần nội dung mới của tài liệu nên hệ thống bắt đầu vòng mới. Câu hỏi vẫn khác các câu cũ nhưng có thể quay lại kiến thức đã hỏi.';
       pool.forEach(x => { if (!x.t && S.f.topic) x.t = S.f.topic; });
       const title = (S.f.title || '').trim() || ('Đề từ: ' + ds.map(d => d.name).join(', ').slice(0, 80) + (scopeLabel ? ' · ' + scopeLabel.slice(0, 40) : ''));
       S.quiz = mkq(pool, pool.length, 1, title, ds[0].subject || 'Chưa có môn', game ? 0 : (exam ? clamp(S.f.extl, 5, 60) : S.f.tl) * 60, exam);
@@ -786,6 +861,6 @@
     finally { S.building = false; }
   };
 
-  window.__scopeTest = { analyze, parseQuick, sameQ, executePlan, scopedText, getScope, syncSel, sigOf, resolveItem };
+  window.__scopeTest = { analyze, parseQuick, sameQ, executePlan, scopedText, getScope, syncSel, sigOf, resolveItem, splitChunks, choose };
   if (S.v === 'mk') V.mk(); else if (S.v === 'docs') V.docs();
 })();
