@@ -4,8 +4,9 @@
  *
  * Bản tiết kiệm token. Giao diện request/response GIỮ NGUYÊN so với bản cũ.
  * Biến môi trường (giữ nguyên): GROQ_API_KEY, GROQ_MODEL, GEMINI_API_KEY, GEMINI_MODEL, GEMINI_FALLBACK_MODEL
- * Biến tùy chọn mới:
- *   QUIZ_AUDIT = light (mặc định) | full (như bản cũ, tốn token nhất) | off (không kiểm định)
+ * Biến tùy chọn:
+ *   QUIZ_AUDIT = light (mặc định) | full | off
+ * Tham số request mới: noWindow (true) = dùng nguyên đoạn text client gửi, không cắt cửa sổ ở server.
  */
 
 const LEVELS = new Set(["Dễ", "Trung bình", "Khó", "Trộn tất cả"]);
@@ -26,7 +27,7 @@ const reply = (statusCode, data = {}) => ({
 const env = key => String(process.env[key] || "").trim();
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
-const MAX_ATTEMPTS = 4;          // số lần gọi AI tối đa cho một request (bản cũ: 10)
+const MAX_ATTEMPTS = 4;
 const DEADLINE_MS = 48000;
 
 function auditMode() {
@@ -95,7 +96,7 @@ function providers() {
   return result;
 }
 
-/* ===== PARSE JSON (có cứu dữ liệu khi AI bị cắt giữa chừng) ===== */
+/* ===== PARSE JSON ===== */
 
 const stripFence = raw => String(raw).trim()
   .replace(/^```(?:json)?\s*/i, "")
@@ -112,7 +113,6 @@ function parseJSON(raw) {
   catch { throw new Error("BAD_JSON_RESPONSE"); }
 }
 
-/* Khi phản hồi bị cắt do hết max tokens, vẫn lấy được các câu hỏi đã hoàn chỉnh thay vì bỏ cả đợt. */
 function salvageObjects(raw, key) {
   const text = stripFence(String(raw || ""));
   const k = text.indexOf(`"${key}"`);
@@ -171,7 +171,6 @@ function normalizeQuestion(raw, mode, selectedLevel) {
 
   const evidence = String(raw.ev ?? raw.evidence ?? "").trim().slice(0, 300);
   let explanation = String(raw.e ?? raw.explanation ?? "").trim();
-  // Giao diện yêu cầu lời giải >= 20 ký tự; lời giải ngắn được bổ sung bằng dẫn chứng.
   if (explanation.length < 20 && evidence) {
     explanation = `${explanation} Theo tài liệu: ${evidence}`.trim();
   }
@@ -203,11 +202,10 @@ function normalizeQuestion(raw, mode, selectedLevel) {
     e: explanation,
     t: String(raw.t ?? raw.topic ?? "").trim(),
     k: mode === "apply" ? "Vận dụng" : "Kiến thức",
-    _ev: evidence            // chỉ dùng nội bộ, được loại bỏ trước khi trả về
+    _ev: evidence
   };
 }
 
-/* Dẫn chứng phải thực sự nằm trong đoạn tài liệu đã gửi (kiểm tra bằng code, không tốn token). */
 function evidenceOk(evidence, srcSet, srcNorm) {
   const n = norm(evidence);
   if (!n) return false;
@@ -266,9 +264,6 @@ function answerKey(value) {
 const okAnswer = key => key.length >= 2 && !/^[0-9 ]*$/.test(key) && !GENERIC_ANSWERS.has(key);
 const optionSet = value => new Set((value?.o || []).map(norm));
 
-/* Hai câu cùng khuôn mẫu ("Từ X có nghĩa là gì?") chỉ khác từ X KHÔNG phải câu trùng.
-   Bản cũ so sánh riêng phần đề nên đánh dấu nhầm hàng loạt câu từ vựng, khiến server phải gọi AI lại nhiều lần.
-   Bản này chỉ coi là trùng khi: cùng đề, cùng đáp án đúng, cùng bộ lựa chọn, hỏi ngược, hoặc đề gần như y hệt kèm lựa chọn chồng lấn. */
 function isRepeated(first, second, strict = true) {
   const a = features(first);
   const b = features(second);
@@ -286,7 +281,6 @@ function isRepeated(first, second, strict = true) {
     const oa = optionSet(first), ob = optionSet(second);
     if (similarity(oa, ob) >= 0.75) return true;
 
-    // Hỏi ngược: đề này chứa đáp án của câu kia và ngược lại.
     if (
       okAnswer(ka) && okAnswer(kb) &&
       ` ${b.normalized} `.includes(` ${ka} `) &&
@@ -297,7 +291,6 @@ function isRepeated(first, second, strict = true) {
       lexical >= 0.85 && similarity(oa, ob) >= 0.5;
   }
 
-  // Một bên chỉ có nội dung câu hỏi (danh sách loại trừ do giao diện gửi): chỉ loại khi gần như y hệt.
   const phrase = similarity(a.pairs, b.pairs);
   return a.unique.size >= 4 && b.unique.size >= 4 &&
     (lexical >= 0.92 || (lexical >= 0.85 && phrase >= 0.8));
@@ -307,7 +300,7 @@ function isDuplicate(question, existing, strict = true) {
   return existing.some(item => isRepeated(question, item, strict));
 }
 
-/* ===== PROMPTS (rút gọn) ===== */
+/* ===== PROMPTS ===== */
 
 function generationPrompt({ text, subject, mode, level, language, count, existing }) {
   const levelLine = level === "Trộn tất cả"
@@ -320,7 +313,7 @@ function generationPrompt({ text, subject, mode, level, language, count, existin
 
   const lang = language === "vi" ? "tiếng Việt" : language === "en" ? "tiếng Anh" : "cùng ngôn ngữ tài liệu";
 
-  const avoid = existing.slice(-16).map(item => String(item).slice(0, 60));
+  const avoid = existing.slice(-30).map(item => String(item).slice(0, 80));
 
   return `
 Tạo ${count} câu trắc nghiệm từ TÀI LIỆU. Chỉ trả JSON:
@@ -329,7 +322,8 @@ Tạo ${count} câu trắc nghiệm từ TÀI LIỆU. Chỉ trả JSON:
 - e: 1-2 câu giải thích vì sao đáp án c đúng. t: chủ đề ≤3 từ.
 - ${modeLine}
 - ${levelLine} Ngôn ngữ: ${lang}. Chủ đề: ${subject || "nội dung tài liệu"}.
-- Mỗi câu hỏi một ý khác nhau, đáp án đúng khác nhau; không hỏi ngược hay đổi cách diễn đạt; không điền chỗ trống. Không đủ căn cứ thì bỏ câu đó.${avoid.length ? `\nKhông lặp các câu: ${JSON.stringify(avoid)}` : ""}
+- Mỗi câu hỏi một ý khác nhau, đáp án đúng khác nhau; không hỏi ngược hay đổi cách diễn đạt; không điền chỗ trống. Không đủ căn cứ thì bỏ câu đó.
+- Trải đều câu hỏi trên toàn đoạn, ưu tiên các chi tiết khác với các câu đã liệt kê.${avoid.length ? `\nKhông lặp các câu: ${JSON.stringify(avoid)}` : ""}
 
 TÀI LIỆU:
 ${text}
@@ -368,11 +362,9 @@ async function request(url, headers, payload, timeoutMs) {
   }
 }
 
-/* Trả về văn bản thô của model. `usage.tokens` cộng dồn tổng token đã dùng (để theo dõi chi phí). */
 async function callModel(provider, promptText, maxTokens, timeoutMs, usage) {
   if (provider.type === "groq") {
     const url = "https://api.groq.com/openai/v1/chat/completions";
-    // Model có "suy nghĩ" (gpt-oss, qwen3) sẽ tốn thêm token; giảm xuống mức thấp nhất nếu model hỗ trợ.
     const reasoning = /gpt-oss/i.test(provider.model) ? "low" : /qwen3/i.test(provider.model) ? "none" : null;
     const variants = [];
     if (reasoning) variants.push({ json: true, reason: true });
@@ -396,7 +388,6 @@ async function callModel(provider, promptText, maxTokens, timeoutMs, usage) {
         data = await request(url, { Authorization: `Bearer ${provider.key}` }, payload, i === 0 ? timeoutMs : Math.min(timeoutMs, 12000));
         break;
       } catch (error) {
-        // 400 = model không hỗ trợ tham số này: thử cấu hình đơn giản hơn.
         if (error.status !== 400 || i === variants.length - 1) throw error;
       }
     }
@@ -409,7 +400,6 @@ async function callModel(provider, promptText, maxTokens, timeoutMs, usage) {
   const base = { contents: [{ role: "user", parts: [{ text: promptText }] }] };
   const jsonConfig = () => ({ responseMimeType: "application/json", temperature: 0.2, maxOutputTokens: maxTokens });
 
-  // Gemini 2.5 Flash tính phí cả token "suy nghĩ": tắt bằng thinkingBudget = 0.
   const variants = [];
   if (/2\.5-flash/i.test(model)) {
     variants.push({ ...base, generationConfig: { ...jsonConfig(), thinkingConfig: { thinkingBudget: 0 } } });
@@ -435,8 +425,6 @@ async function callModel(provider, promptText, maxTokens, timeoutMs, usage) {
 
 /* ===== KIỂM ĐỊNH ===== */
 
-/* Kiểm định nhẹ: KHÔNG gửi lại tài liệu. Chỉ gửi đề + 4 lựa chọn + dẫn chứng; AI chỉ trả số đáp án.
-   Chỉ loại câu khi AI khẳng định một đáp án KHÁC với đáp án đã tạo (tránh c và lời giải lệch nhau). */
 async function lightAudit(provider, questions, timeoutMs, usage) {
   const items = questions.map((x, i) => ({ i, q: x.q, o: x.o, ev: x._ev || "" }));
   const prompt =
@@ -454,8 +442,6 @@ async function lightAudit(provider, questions, timeoutMs, usage) {
   });
 }
 
-/* Kiểm định đầy đủ (như bản cũ): gửi lại tài liệu + viết lại lời giải. Chỉ dùng khi QUIZ_AUDIT=full
-   hoặc khi AI không chịu trả dẫn chứng (ev). */
 async function fullAudit(provider, sourceText, questions, timeoutMs, usage) {
   if (!questions.length) return [];
 
@@ -534,6 +520,7 @@ exports.handler = async function handler(event) {
   const requestedCount = Number.isFinite(Number(input.count)) ? Math.floor(Number(input.count)) : 10;
   const count = clamp(requestedCount, 1, 50);
   const baseBatch = clamp(Math.floor(Number(input.batch)) || 0, 0, 1000);
+  const noWindow = input.noWindow === true;
 
   const exclude = Array.isArray(input.exclude)
     ? input.exclude.filter(item => typeof item === "string").slice(-100).map(item => ({ q: item }))
@@ -557,8 +544,6 @@ exports.handler = async function handler(event) {
   const deadline = startTime + DEADLINE_MS;
   const usage = { tokens: 0 };
 
-  /* Tài liệu ngắn chỉ đủ cho một số câu nhất định (~1 câu / 30 ký tự). Nếu giao diện đã có đủ số câu đó
-     thì trả về ngay, không gọi AI để rồi nhận toàn câu trùng. */
   const capTotal = Math.max(5, Math.floor(text.length / 30));
   if (capTotal <= 100 && exclude.length >= capTotal) {
     return reply(200, {
@@ -593,20 +578,19 @@ exports.handler = async function handler(event) {
       ) continue;
 
       const remaining = target - found.length;
-      // Chỉ dư vài câu để bù câu bị lọc trùng (bản cũ dư tới 25%, phần dư bị bỏ phí).
       const batchSize = clamp(
         remaining + (remaining >= 8 ? 2 : 1),
         1,
         provider.type === "groq" ? 10 : 14
       );
 
-      // Đoạn tài liệu gửi đi tỉ lệ với số câu cần tạo (bản cũ luôn gửi 5200 / 10000 ký tự).
       const chunkSize = provider.type === "groq"
         ? clamp(batchSize * 450, 2600, 5200)
         : clamp(batchSize * 700, 3500, 10000);
 
       let source = text;
-      if (text.length > chunkSize) {
+      /* noWindow: client đã tự chia đoạn, dùng nguyên văn bản nhận được */
+      if (!noWindow && text.length > chunkSize) {
         const span = Math.max(1, text.length - chunkSize + 1);
         const step = Math.floor(chunkSize * 0.7);
         const start = ((baseBatch + cycle++) * step) % span;
@@ -660,7 +644,6 @@ exports.handler = async function handler(event) {
           if (candidates.length >= remaining) break;
         }
 
-        // AI không chịu trả dẫn chứng: kiểm định đầy đủ để giữ chất lượng.
         let pool = candidates;
         let needFull = audit === "full";
         if (!pool.length && lacking.length && audit !== "off") {
@@ -689,14 +672,12 @@ exports.handler = async function handler(event) {
             try {
               approved = await lightAudit(provider, pool, Math.min(auditTimeout, 8000), usage);
             } catch (error) {
-              // Kiểm định nhẹ lỗi: câu hỏi đã qua kiểm tra dẫn chứng nên vẫn dùng được, tránh phí token đã tạo.
               errors.push({ provider: provider.type, model: provider.model, category: "AUDIT_SKIPPED", status: error.status || null });
               approved = pool;
             }
           }
         }
 
-        // Lọc tuần tự: giữ câu đầu, bỏ câu sau nếu trùng (đáp án có thể đã đổi sau kiểm định).
         const fresh = [];
         for (const question of approved) {
           if (isDuplicate(question, [...found, ...fresh], strict)) { duplicateCount++; continue; }
@@ -721,7 +702,7 @@ exports.handler = async function handler(event) {
     if (!madeProgress && disabledProviders.size >= availableProviders.length) break;
   }
 
-  console.info("quiz-usage", { requested: count, generated: found.length, attempts, tokens: usage.tokens, audit, mode });
+  console.info("quiz-usage", { requested: count, generated: found.length, attempts, tokens: usage.tokens, audit, mode, noWindow });
 
   if (!found.length) {
     return reply(502, {
