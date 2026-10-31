@@ -1135,6 +1135,7 @@ window.gqBack=function(){S.mode='game';go('mk')};
 /* Sảnh chờ: cập nhật luật chơi cho đúng với hệ thống mới */
 const _ready=V.ready;V.ready=function(){_ready();const q=S.quiz;if(q&&q.game){const r=$('.qv-rules');if(r){r.innerHTML='<span>❤️ 3 lượt sai trong một ván</span><span>⚡ Đúng càng nhanh càng nhiều điểm</span><span>🔥 Chuỗi đúng nhận combo và thưởng mốc</span><span>🎁 Thỉnh thoảng có thẻ phần thưởng: chọn 1 vật phẩm, dùng ngay</span><span>👥 Mỗi ván ngẫu nhiên 5, 10 hoặc 15 người (bot mô phỏng)</span><span>⌨ Phím A–D hoặc 1–4 để trả lời</span>';r.insertAdjacentHTML('afterend',rulesHtml());const st=ld('gqStats',{games:0,wins:0,ach:{}}),got=Object.keys(ACH).filter(k=>(st.ach||{})[k]);r.insertAdjacentHTML('afterend',`<p class="gq-badges"><b>Thành tích:</b> ${got.length?got.map(k=>ACH[k][0]+' '+ACH[k][1]).join(' · '):'chưa đạt thành tích nào'} <small>(${st.games} ván · ${st.wins} lần về nhất)</small></p>`) }ensureYouTubeMusicDock()}};
 window.gqBoard=board;
+window.cleanupYouTubeMusicDock=cleanupYouTubeMusicDock;
 /* Âm thanh bổ sung: đếm ngược 5 giây cuối */
 let gqWarnKey='';setInterval(()=>{try{const q=S.quiz;if(!q||!q.game||q.done||S.v!=='quiz'||!q.g||q.g.phase!=='answering'||q.g.locked||q.g.paused)return;
  const r=Math.ceil(remainMs(q)/1000);if(r>0&&r<=5){const k=q.i+':'+r;if(k!==gqWarnKey){gqWarnKey=k;beep(SND.warn)}}}catch(e){}},150);
